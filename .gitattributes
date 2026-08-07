@@ -1,0 +1,21 @@
+* text=auto
+
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+.* text eol=lf
+*.ps1 text eol=crlf
+
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.mp4 binary
+*.avi binary
+*.mov binary
+*.mkv binary
+*.pt binary
+*.pth binary
+*.onnx binary

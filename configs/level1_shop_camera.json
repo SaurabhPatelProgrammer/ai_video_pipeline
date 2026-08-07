@@ -1,0 +1,15 @@
+{
+  "profile_name": "supplied-shop-camera-level1",
+  "working_zone": [[0.12, 0.22], [0.78, 0.22], [0.78, 0.88], [0.12, 0.88]],
+  "tub_zone": [[0.28, 0.52], [0.75, 0.52], [0.75, 0.87], [0.28, 0.87]],
+  "serving_zone": [[0.15, 0.25], [0.56, 0.25], [0.56, 0.49], [0.15, 0.49]],
+  "analysis_width": 480,
+  "pixel_difference_threshold": 20,
+  "tub_motion_threshold": 0.015,
+  "serving_motion_threshold": 0.010,
+  "minimum_loading_frames": 3,
+  "minimum_serving_frames": 3,
+  "minimum_transfer_seconds": 0.25,
+  "transfer_timeout_seconds": 5.0,
+  "cooldown_seconds": 1.25
+}

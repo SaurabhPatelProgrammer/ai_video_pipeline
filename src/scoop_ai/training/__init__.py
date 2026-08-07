@@ -1,0 +1,36 @@
+"""Dataset, split, and event-evaluation tooling for scoop AI."""
+
+from .dataset_validation import (
+    REQUIRED_CLASSES,
+    DatasetValidationError,
+    DatasetValidationOptions,
+    DatasetValidationReport,
+    validate_dataset,
+)
+from .event_evaluation import EvaluationEvent, EvaluationResult, evaluate_events
+from .session_split import deterministic_session_split
+from .motion_baseline import (
+    MotionBaselineTrainingResult,
+    SessionMotionSummary,
+    train_motion_baseline,
+    train_motion_baseline_from_videos,
+)
+from .order_profile import ServedOrderProfileResult, create_served_order_profile
+
+__all__ = [
+    "DatasetValidationError",
+    "DatasetValidationOptions",
+    "DatasetValidationReport",
+    "EvaluationEvent",
+    "EvaluationResult",
+    "REQUIRED_CLASSES",
+    "deterministic_session_split",
+    "MotionBaselineTrainingResult",
+    "SessionMotionSummary",
+    "train_motion_baseline",
+    "train_motion_baseline_from_videos",
+    "ServedOrderProfileResult",
+    "create_served_order_profile",
+    "evaluate_events",
+    "validate_dataset",
+]

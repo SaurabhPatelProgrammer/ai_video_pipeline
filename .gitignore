@@ -1,0 +1,78 @@
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+credentials/
+secrets/
+
+# Python environments, caches, and build output
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Editors and operating-system metadata
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Runtime output and local state
+artifacts/
+logs/
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.pid
+
+# Private camera media and derived training data
+datasets/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.m4v
+*.jpg
+*.jpeg
+*.png
+*.bmp
+
+# Generated model weights and locally trained profiles
+models/
+weights/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.safetensors
+
+# Local service and camera configuration; commit examples only
+configs/service.toml
+configs/level1_shop_camera.user.json
+configs/cameras/*.toml
+!configs/cameras/*.example.toml

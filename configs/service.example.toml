@@ -1,0 +1,17 @@
+[service]
+name = "scoop-counter"
+environment = "production"
+artifact_root = "D:\\ip-camera-ai-data"
+log_level = "INFO"
+health_host = "127.0.0.1"
+health_port = 8080
+shutdown_timeout_seconds = 10.0
+
+[capture]
+reconnect_seconds = 3.0
+reconnect_max_seconds = 30.0
+reconnect_jitter_ratio = 0.20
+open_timeout_ms = 5000
+read_timeout_ms = 5000
+read_wait_seconds = 2.0
+rtsp_transport = "tcp"
