@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import logging
 import sys
@@ -46,6 +47,14 @@ def _parser() -> argparse.ArgumentParser:
     service.add_argument("--camera-config", type=Path, required=True)
     service.add_argument("--checkpoint-manifest", type=Path, required=True)
     service.set_defaults(handler=_service)
+
+    consistency = subparsers.add_parser(
+        "consistency-check",
+        help="Verify evidence file integrity against the database",
+    )
+    consistency.add_argument("--database", type=Path, required=True)
+    consistency.add_argument("--evidence-root", type=Path, required=True)
+    consistency.set_defaults(handler=_consistency_check)
 
     dataset = subparsers.add_parser("dataset", help="Validate or split versioned datasets")
     dataset_commands = dataset.add_subparsers(dest="dataset_command", required=True)
@@ -222,6 +231,57 @@ def _service(args: argparse.Namespace) -> int:
         camera_config_path=args.camera_config,
         checkpoint_manifest_path=args.checkpoint_manifest,
     )
+
+
+def _consistency_check(args: argparse.Namespace) -> int:
+    """Verify evidence files on disk vs. database records."""
+    from .storage import SQLiteEventRepository
+
+    evidence_root = args.evidence_root.resolve()
+    orphans: list[str] = []
+    missing: list[str] = []
+    corrupt: list[str] = []
+
+    with SQLiteEventRepository(args.database) as repository:
+        db_evidence = repository.list_all_evidence()
+        db_paths = {rec.relative_path: rec for rec in db_evidence}
+
+        # Scan disk for orphan files
+        if evidence_root.is_dir():
+            for path in sorted(evidence_root.rglob("*")):
+                if path.is_file() and not path.name.startswith("."):
+                    rel = path.relative_to(evidence_root).as_posix()
+                    if rel not in db_paths:
+                        orphans.append(rel)
+
+        # Check each DB record against disk
+        for rec in db_evidence:
+            abs_path = (evidence_root / rec.relative_path).resolve()
+            if not abs_path.is_relative_to(evidence_root):
+                corrupt.append(rec.relative_path)
+                continue
+            if not abs_path.is_file():
+                missing.append(rec.relative_path)
+                continue
+            # Verify size + SHA-256
+            digest = hashlib.sha256()
+            size = 0
+            with abs_path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                    size += len(chunk)
+            if size != rec.size_bytes or digest.hexdigest() != rec.sha256:
+                corrupt.append(rec.relative_path)
+
+    status = "ok" if not (orphans or missing or corrupt) else "failed"
+    report = {
+        "status": status,
+        "orphans": orphans,
+        "missing": missing,
+        "corrupt": corrupt,
+    }
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if status == "ok" else 1
 
 
 def _dataset_validate(args: argparse.Namespace) -> int:

@@ -116,6 +116,7 @@ class EvidenceRecord:
     created_at: str
     retention_deadline: str
     event_id: str | None = None
+    integrity_status: str = "unverified"
     metadata: Mapping[str, object] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -128,6 +129,8 @@ class EvidenceRecord:
             raise ValueError("size_bytes cannot be negative")
         _validate_timestamp(self.created_at, "created_at")
         _validate_timestamp(self.retention_deadline, "retention_deadline")
+        if self.integrity_status not in {"unverified", "valid", "corrupt", "missing"}:
+            raise ValueError(f"unsupported integrity_status: {self.integrity_status}")
         _canonical_json(self.metadata)
 
 
@@ -331,6 +334,14 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         BEFORE DELETE ON health_events BEGIN
             SELECT RAISE(ABORT, 'health events are immutable');
         END;
+        """,
+    ),
+    (
+        2,
+        """
+        ALTER TABLE evidence_artifacts ADD COLUMN integrity_status TEXT
+            CHECK(integrity_status IN ('unverified', 'valid', 'corrupt', 'missing'))
+            DEFAULT 'unverified';
         """,
     ),
 )
@@ -627,8 +638,9 @@ class SQLiteEventRepository:
                 """
                 INSERT INTO evidence_artifacts(
                     evidence_id, event_id, relative_path, sha256, size_bytes,
-                    media_type, created_at, retention_deadline, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    media_type, created_at, retention_deadline, integrity_status,
+                    metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(evidence_id) DO NOTHING
                 """,
                 (
@@ -640,6 +652,7 @@ class SQLiteEventRepository:
                     evidence.media_type,
                     _normalize_timestamp(evidence.created_at, "created_at"),
                     _normalize_timestamp(evidence.retention_deadline, "retention_deadline"),
+                    evidence.integrity_status,
                     _canonical_json(evidence.metadata),
                 ),
             )
@@ -841,8 +854,85 @@ class SQLiteEventRepository:
             media_type=row["media_type"],
             created_at=row["created_at"],
             retention_deadline=row["retention_deadline"],
+            integrity_status=row["integrity_status"] or "unverified",
             metadata=json.loads(row["metadata_json"]),
         )
+
+    # ── Phase 1: Reconciliation query helpers ────────────────────────────
+
+    def list_all_evidence(self, *, include_deleted: bool = False) -> list[EvidenceRecord]:
+        """Return evidence artifact rows, excluding soft-deleted ones by default.
+
+        Reconciliation and consistency checks must not treat a file removed by
+        the retention job as a missing/corrupt artifact, so callers get only
+        active rows unless they explicitly ask for deleted ones too.
+        """
+        query = "SELECT * FROM evidence_artifacts"
+        if not include_deleted:
+            query += " WHERE deleted_at IS NULL"
+        query += " ORDER BY created_at"
+        with self._lock:
+            rows = self._connection.execute(query).fetchall()
+        return [self._evidence_from_row(row) for row in rows]
+
+    def list_all_event_evidence_paths(self) -> set[str]:
+        """Return distinct evidence_path values referenced by events."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT DISTINCT evidence_path FROM events WHERE evidence_path IS NOT NULL"
+            ).fetchall()
+        return {row[0] for row in rows}
+
+    def get_event_by_evidence_path(self, path: str) -> EventRecord | None:
+        """Find the first event referencing the given evidence path."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM events WHERE evidence_path = ? LIMIT 1",
+                (path,),
+            ).fetchone()
+        return self._event_from_row(row) if row else None
+
+    def update_evidence_integrity(
+        self, evidence_id: str, status: str
+    ) -> None:
+        """Set the integrity_status column for a specific evidence row."""
+        if status not in {"unverified", "valid", "corrupt", "missing"}:
+            raise ValueError(f"unsupported integrity_status: {status}")
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE evidence_artifacts SET integrity_status = ? WHERE evidence_id = ?",
+                (status, evidence_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"unknown evidence_id: {evidence_id}")
+
+    def update_event_review_state(
+        self, event_id: str, review_state: str, *, extra_metadata: Mapping[str, object] | None = None
+    ) -> None:
+        """Update the review_state (and optionally merge extra metadata) for an event."""
+        if review_state not in {"unreviewed", "accepted", "rejected", "needs_review"}:
+            raise ValueError(f"unsupported review_state: {review_state}")
+        with self.transaction() as connection:
+            if extra_metadata:
+                row = connection.execute(
+                    "SELECT metadata_json FROM events WHERE event_id = ?",
+                    (event_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"unknown event_id: {event_id}")
+                existing = json.loads(row["metadata_json"])
+                existing.update(extra_metadata)
+                connection.execute(
+                    "UPDATE events SET review_state = ?, metadata_json = ? WHERE event_id = ?",
+                    (review_state, _canonical_json(existing), event_id),
+                )
+            else:
+                cursor = connection.execute(
+                    "UPDATE events SET review_state = ? WHERE event_id = ?",
+                    (review_state, event_id),
+                )
+                if cursor.rowcount != 1:
+                    raise KeyError(f"unknown event_id: {event_id}")
 
     def integrity_check(self) -> bool:
         with self._lock:

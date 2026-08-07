@@ -24,6 +24,7 @@ from scoop_ai.storage import (  # noqa: E402
     SessionRecord,
     SQLiteEventRepository,
 )
+from scoop_ai.storage.database import MIGRATIONS  # noqa: E402
 
 
 NOW = "2026-08-05T12:00:00+00:00"
@@ -64,7 +65,7 @@ class SQLiteEventRepositoryTests(unittest.TestCase):
 
     def test_wal_schema_and_idempotent_event_insert(self) -> None:
         self.assertEqual(self.repository.journal_mode().lower(), "wal")
-        self.assertEqual(self.repository.schema_version, 1)
+        self.assertEqual(self.repository.schema_version, 2)
         self.assertTrue(self.repository.insert_event(self.event()))
         self.assertFalse(self.repository.insert_event(self.event()))
         stored = self.repository.get_event("event-1")
@@ -152,6 +153,116 @@ class SQLiteEventRepositoryTests(unittest.TestCase):
             self.repository.list_expired_evidence(deadline="2026-08-13T00:00:00+00:00"),
             [],
         )
+
+    def test_reconciliation_helpers_and_soft_delete_filtering(self) -> None:
+        digest = "b" * 64
+        self.repository.insert_event(
+            self.event(evidence_path="session-1/event-1.jpg", evidence_sha256=digest)
+        )
+        evidence = EvidenceRecord(
+            evidence_id="evidence-1",
+            event_id="event-1",
+            relative_path="session-1/event-1.jpg",
+            sha256=digest,
+            size_bytes=42,
+            media_type="image/jpeg",
+            created_at=NOW,
+            retention_deadline="2026-08-12T12:00:00+00:00",
+        )
+        self.repository.register_evidence(evidence)
+
+        self.assertEqual(
+            self.repository.list_all_event_evidence_paths(), {"session-1/event-1.jpg"}
+        )
+        found = self.repository.get_event_by_evidence_path("session-1/event-1.jpg")
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertEqual(found.event_id, "event-1")
+        self.assertIsNone(self.repository.get_event_by_evidence_path("no/such/path.jpg"))
+
+        self.repository.update_evidence_integrity("evidence-1", "missing")
+        [stored] = self.repository.list_all_evidence()
+        self.assertEqual(stored.integrity_status, "missing")
+        with self.assertRaises(ValueError):
+            self.repository.update_evidence_integrity("evidence-1", "not-a-status")
+        with self.assertRaises(KeyError):
+            self.repository.update_evidence_integrity("unknown-id", "valid")
+
+        self.repository.update_event_review_state(
+            "event-1", "needs_review", extra_metadata={"evidence_missing": True}
+        )
+        reloaded = self.repository.get_event("event-1")
+        assert reloaded is not None
+        self.assertEqual(reloaded.review_state, "needs_review")
+        self.assertTrue(reloaded.metadata["evidence_missing"])
+        with self.assertRaises(KeyError):
+            self.repository.update_event_review_state("unknown-event", "accepted")
+
+        # Soft-deleted evidence must not resurface for reconciliation by default,
+        # since a retention-expired file is expected to be gone from disk.
+        self.assertTrue(self.repository.mark_evidence_deleted("evidence-1"))
+        self.assertEqual(self.repository.list_all_evidence(), [])
+        self.assertEqual(len(self.repository.list_all_evidence(include_deleted=True)), 1)
+
+
+class SchemaMigrationTests(unittest.TestCase):
+    def test_v1_database_upgrades_to_v2_and_backfills_integrity_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "events.sqlite3"
+            v1_sql = next(sql for version, sql in MIGRATIONS if version == 1)
+            raw = sqlite3.connect(path)
+            try:
+                raw.executescript(v1_sql)
+                raw.execute(
+                    "CREATE TABLE schema_migrations ("
+                    "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+                )
+                raw.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)",
+                    (NOW,),
+                )
+                raw.execute(
+                    """
+                    INSERT INTO evidence_artifacts(
+                        evidence_id, event_id, relative_path, sha256, size_bytes,
+                        media_type, created_at, retention_deadline, metadata_json
+                    ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "evidence-legacy",
+                        "legacy/frame.jpg",
+                        "a" * 64,
+                        10,
+                        "image/jpeg",
+                        NOW,
+                        "2026-08-12T12:00:00+00:00",
+                        "{}",
+                    ),
+                )
+                raw.commit()
+            finally:
+                raw.close()
+
+            repository = SQLiteEventRepository(path)
+            try:
+                self.assertEqual(repository.schema_version, 2)
+                rows = repository.list_all_evidence()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0].evidence_id, "evidence-legacy")
+                self.assertEqual(rows[0].integrity_status, "unverified")
+            finally:
+                repository.close()
+
+    def test_reopening_at_current_schema_is_a_no_op_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "events.sqlite3"
+            first = SQLiteEventRepository(path)
+            first.close()
+            second = SQLiteEventRepository(path)
+            try:
+                self.assertEqual(second.schema_version, len(MIGRATIONS))
+            finally:
+                second.close()
 
 
 class EvidenceWriterTests(unittest.TestCase):

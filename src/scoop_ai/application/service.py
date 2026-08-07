@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import cv2
+import hashlib
 import ipaddress
 import json
 import logging
+import mimetypes
 import signal
 import threading
 import time
@@ -34,7 +36,7 @@ from ..storage import (
     SessionRecord,
     SQLiteEventRepository,
 )
-from ..storage.database import utc_now_iso
+from ..storage.database import HealthEventRecord, utc_now_iso
 from .quality import FrameQualityGate
 
 LOGGER = logging.getLogger("scoop-ai.service")
@@ -117,6 +119,143 @@ def _expire_evidence(repository: SQLiteEventRepository, evidence_root: Path) -> 
         repository.mark_evidence_deleted(record.evidence_id)
 
 
+def reconcile_startup(
+    repository: SQLiteEventRepository,
+    evidence_root: Path,
+    *,
+    logger: logging.Logger | None = None,
+) -> dict[str, list[str]]:
+    """Run at startup to reconcile filesystem evidence vs. database records.
+
+    Returns a summary dict with keys: 'orphans_recovered', 'orphans_deleted',
+    'missing_flagged' listing the relative paths affected.
+    """
+    log = logger or LOGGER
+    root = evidence_root.resolve()
+    summary: dict[str, list[str]] = {
+        "orphans_recovered": [],
+        "orphans_deleted": [],
+        "missing_flagged": [],
+    }
+
+    if not root.is_dir():
+        log.info("Evidence root does not exist yet, skipping reconciliation")
+        return summary
+
+    # 1. Collect all evidence files on disk
+    disk_files: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_file() and not path.name.startswith("."):
+            rel = path.relative_to(root).as_posix()
+            disk_files.add(rel)
+
+    # 2. Collect all evidence records from DB
+    db_evidence = repository.list_all_evidence()
+    db_paths: dict[str, EvidenceRecord] = {rec.relative_path: rec for rec in db_evidence}
+
+    # 3. Collect event evidence paths (events.evidence_path column)
+    event_paths = repository.list_all_event_evidence_paths()
+
+    # ── Orphan files: on disk but not tracked by an active evidence record ──
+    for rel_path in sorted(disk_files - set(db_paths.keys())):
+        abs_path = (root / rel_path).resolve()
+        if not abs_path.is_relative_to(root):
+            continue  # traversal guard
+
+        if rel_path in event_paths:
+            # The event table references this file — auto-recover into evidence_artifacts
+            try:
+                digest = hashlib.sha256(abs_path.read_bytes()).hexdigest()
+                size = abs_path.stat().st_size
+                media_type = mimetypes.guess_type(abs_path.name)[0] or "application/octet-stream"
+                ev_record = EvidenceRecord(
+                    evidence_id=str(uuid.uuid4()),
+                    relative_path=rel_path,
+                    sha256=digest,
+                    size_bytes=size,
+                    media_type=media_type,
+                    created_at=utc_now_iso(),
+                    retention_deadline=(
+                        datetime.now(timezone.utc) + timedelta(days=14)
+                    ).isoformat(timespec="milliseconds"),
+                    integrity_status="valid",
+                )
+                repository.register_evidence(ev_record)
+                log.warning(
+                    "Reconciliation: recovered orphan file",
+                    extra={"path": rel_path},
+                )
+                summary["orphans_recovered"].append(rel_path)
+            except Exception:
+                log.exception(
+                    "Reconciliation: failed to recover orphan",
+                    extra={"path": rel_path},
+                )
+        else:
+            # Not referenced by any event — safe to delete
+            try:
+                abs_path.unlink()
+                log.info(
+                    "Reconciliation: deleted unreferenced orphan",
+                    extra={"path": rel_path},
+                )
+                summary["orphans_deleted"].append(rel_path)
+            except OSError:
+                log.exception(
+                    "Reconciliation: could not delete orphan",
+                    extra={"path": rel_path},
+                )
+
+    # ── Missing files: in DB (active) but not on disk ──────────────────
+    for rec in db_evidence:
+        abs_path = (root / rec.relative_path).resolve()
+        if rec.relative_path not in disk_files and abs_path.is_relative_to(root):
+            # Only flag records that haven't been soft-deleted already
+            try:
+                repository.update_evidence_integrity(rec.evidence_id, "missing")
+            except Exception:
+                log.exception(
+                    "Reconciliation: could not mark evidence missing",
+                    extra={"evidence_id": rec.evidence_id},
+                )
+                continue
+            # Flag the linked event as needs_review
+            if rec.event_id:
+                try:
+                    repository.update_event_review_state(
+                        rec.event_id,
+                        "needs_review",
+                        extra_metadata={"evidence_missing": True},
+                    )
+                except Exception:
+                    log.exception(
+                        "Reconciliation: could not flag event",
+                        extra={"event_id": rec.event_id},
+                    )
+            # Record a health event
+            try:
+                repository.record_health_event(
+                    HealthEventRecord(
+                        health_event_id=str(uuid.uuid4()),
+                        component="reconciliation",
+                        state="degraded",
+                        occurred_at=utc_now_iso(),
+                        message=f"Evidence file missing on disk: {rec.relative_path}",
+                    )
+                )
+            except Exception:
+                log.exception("Reconciliation: could not write health event")
+            log.warning(
+                "Reconciliation: evidence file missing",
+                extra={"path": rec.relative_path, "evidence_id": rec.evidence_id},
+            )
+            summary["missing_flagged"].append(rec.relative_path)
+
+    totals = {k: len(v) for k, v in summary.items()}
+    log.info("Startup reconciliation complete", extra=totals)
+    return summary
+
+
 def run_service(
     *,
     service_config_path: str | Path,
@@ -168,6 +307,13 @@ def run_service(
     )
     evidence_writer = EvidenceWriter(evidence_root)
     repository = SQLiteEventRepository(database_path)
+
+    # ── Phase 1: startup reconciliation ──────────────────────────────────
+    try:
+        reconcile_startup(repository, evidence_root)
+    except Exception:
+        LOGGER.exception("Startup reconciliation failed (non-fatal)")
+
     repository.register_model(
         ModelVersionRecord(
             model_version=detector.manifest.model_version,
