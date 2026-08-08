@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from scoop_ai.training import (  # noqa: E402
+    DatasetValidationOptions,
     DatasetValidationError,
     deterministic_session_split,
     validate_dataset,
@@ -130,6 +131,21 @@ class DatasetValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(DatasetValidationError, "duplicate image content"):
             validate_dataset(self.root)
 
+    def test_custom_single_class_dataset_is_supported(self) -> None:
+        for split in ("train", "valid", "test"):
+            path = self.root / split / "_annotations.coco.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["categories"] = [{"id": 1, "name": "ice_cream_item"}]
+            data["annotations"] = [data["annotations"][0]]
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+        report = validate_dataset(
+            self.root,
+            options=DatasetValidationOptions(required_classes=("ice_cream_item",)),
+        )
+
+        self.assertEqual(report.splits["train"].class_counts, {"ice_cream_item": 1})
+
 
 class DeterministicSessionSplitTests(unittest.TestCase):
     def test_split_is_reproducible_and_session_exclusive(self) -> None:
@@ -191,6 +207,24 @@ class CheckpointManifestTests(unittest.TestCase):
             load_checkpoint_manifest(
                 self.manifest_path, expected_architecture="small"
             )
+
+    def test_custom_detector_class_is_supported(self) -> None:
+        self.manifest["classes"] = ["ice_cream_item"]
+        self.manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
+
+        manifest = load_checkpoint_manifest(
+            self.manifest_path,
+            expected_classes=("ice_cream_item",),
+        )
+
+        self.assertEqual(manifest.classes, ("ice_cream_item",))
+
+    def test_custom_detector_class_requires_explicit_selection(self) -> None:
+        self.manifest["classes"] = ["ice_cream_item"]
+        self.manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
+
+        with self.assertRaisesRegex(ManifestValidationError, "classes must be exactly"):
+            load_checkpoint_manifest(self.manifest_path)
 
 
 if __name__ == "__main__":

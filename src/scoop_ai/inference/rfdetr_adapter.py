@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .checkpoint_manifest import CheckpointManifest, load_checkpoint_manifest
+from .checkpoint_manifest import CANONICAL_CLASSES
 from .interfaces import Detection
 
 
@@ -26,11 +27,13 @@ class RFDETRLocalAdapter:
         *,
         device: str | None = None,
         expected_architecture: str | None = None,
+        expected_classes: tuple[str, ...] | None = CANONICAL_CLASSES,
     ) -> None:
         self.manifest_path = Path(manifest_path).resolve()
         self.manifest: CheckpointManifest = load_checkpoint_manifest(
             self.manifest_path,
             expected_architecture=expected_architecture,
+            expected_classes=expected_classes,
             verify_checkpoint=True,
         )
         self.device = device

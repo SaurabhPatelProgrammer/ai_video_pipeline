@@ -51,6 +51,7 @@ def create_checkpoint_manifest(
     confidence_threshold: float = 0.35,
     approved_by: str | None = None,
     reviewer_signature: str | None = None,
+    classes: tuple[str, ...] = CANONICAL_CLASSES,
 ) -> CheckpointManifest:
     """Create and immediately verify a manifest beside a trusted checkpoint."""
 
@@ -67,7 +68,7 @@ def create_checkpoint_manifest(
         "schema_version": 1,
         "model_family": "rfdetr",
         "architecture": architecture,
-        "classes": list(CANONICAL_CLASSES),
+        "classes": list(classes),
         "checkpoint_file": relative_checkpoint.as_posix(),
         "checkpoint_sha256": _sha256(checkpoint),
         "dataset_version": dataset_version,
@@ -80,7 +81,11 @@ def create_checkpoint_manifest(
     temporary = output.with_suffix(output.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.replace(output)
-    return load_checkpoint_manifest(output, verify_checkpoint=True)
+    return load_checkpoint_manifest(
+        output,
+        verify_checkpoint=True,
+        expected_classes=classes,
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -110,6 +115,7 @@ def load_checkpoint_manifest(
     manifest_path: Path,
     *,
     expected_architecture: str | None = None,
+    expected_classes: tuple[str, ...] | None = CANONICAL_CLASSES,
     verify_checkpoint: bool = True,
 ) -> CheckpointManifest:
     """Load a manifest and optionally verify its local checkpoint checksum."""
@@ -152,9 +158,16 @@ def load_checkpoint_manifest(
         raise ManifestValidationError(
             f"checkpoint architecture {architecture!r} does not match {expected_architecture!r}"
         )
-    if len(classes) != len(set(classes)) or set(classes) != set(CANONICAL_CLASSES):
+    if not classes or len(classes) != len(set(classes)):
+        raise ManifestValidationError("classes must contain unique class names")
+    invalid_classes = [name for name in classes if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name)]
+    if invalid_classes:
         raise ManifestValidationError(
-            f"classes must be exactly {list(CANONICAL_CLASSES)!r} without duplicates"
+            f"classes must use lowercase letters, digits, and underscores: {invalid_classes!r}"
+        )
+    if expected_classes is not None and set(classes) != set(expected_classes):
+        raise ManifestValidationError(
+            f"classes must be exactly {list(expected_classes)!r} without duplicates"
         )
     if not SHA256_PATTERN.fullmatch(checkpoint_sha256):
         raise ManifestValidationError("checkpoint_sha256 must be 64 lowercase hex characters")

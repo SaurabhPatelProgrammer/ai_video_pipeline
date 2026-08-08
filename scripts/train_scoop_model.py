@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from collections import Counter
 from dataclasses import asdict
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from rfdetr import RFDETRNano
 from scoop_ai.inference import create_checkpoint_manifest
+from scoop_ai.training import DatasetValidationOptions
 from scoop_ai.training import validate_dataset as validate_production_dataset
 
 REQUIRED_CLASSES = {"scoop", "loaded_scoop", "serving_container"}
@@ -26,10 +28,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--resolution", type=int, default=576)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument(
+        "--classes",
+        default=",".join(sorted(REQUIRED_CLASSES)),
+        help="Comma-separated detector classes; defaults to the legacy scoop classes.",
+    )
     return parser.parse_args()
 
 
-def inspect_split(dataset: Path, split: str) -> dict[str, object]:
+def inspect_split(
+    dataset: Path, split: str, required_classes: set[str] | None = None
+) -> dict[str, object]:
+    expected = required_classes or REQUIRED_CLASSES
     split_directory = dataset / split
     annotation_path = split_directory / "_annotations.coco.json"
     if not annotation_path.is_file():
@@ -38,9 +48,9 @@ def inspect_split(dataset: Path, split: str) -> dict[str, object]:
         data = json.load(handle)
     categories = {int(item["id"]): str(item["name"]) for item in data.get("categories", [])}
     category_names = set(categories.values())
-    if category_names != REQUIRED_CLASSES:
+    if category_names != expected:
         raise ValueError(
-            f"{split} classes must be exactly {sorted(REQUIRED_CLASSES)}; "
+            f"{split} classes must be exactly {sorted(expected)}; "
             f"received {sorted(category_names)}"
         )
     images = data.get("images", [])
@@ -55,7 +65,7 @@ def inspect_split(dataset: Path, split: str) -> dict[str, object]:
     if missing_images:
         raise ValueError(f"{split} references {len(missing_images)} missing image(s)")
     class_counts = Counter(categories.get(int(item["category_id"]), "unknown") for item in annotations)
-    empty_classes = REQUIRED_CLASSES - set(class_counts)
+    empty_classes = expected - set(class_counts)
     if empty_classes:
         raise ValueError(f"{split} has no annotations for: {sorted(empty_classes)}")
     sessions = {
@@ -71,10 +81,15 @@ def inspect_split(dataset: Path, split: str) -> dict[str, object]:
     }
 
 
-def validate_dataset(dataset: Path) -> dict[str, dict[str, object]]:
+def validate_dataset(
+    dataset: Path, required_classes: set[str] | None = None
+) -> dict[str, dict[str, object]]:
     if not dataset.is_dir():
         raise ValueError(f"Dataset directory not found: {dataset}")
-    summary = {split: inspect_split(dataset, split) for split in ("train", "valid", "test")}
+    summary = {
+        split: inspect_split(dataset, split, required_classes)
+        for split in ("train", "valid", "test")
+    }
     session_owners: dict[str, str] = {}
     for split, details in summary.items():
         for session in details["sessions"]:
@@ -87,7 +102,14 @@ def validate_dataset(dataset: Path) -> dict[str, dict[str, object]]:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
     args = parse_args()
+    classes = tuple(dict.fromkeys(value.strip() for value in args.classes.split(",") if value.strip()))
+    if not classes:
+        raise SystemExit("--classes must contain at least one class")
     if args.epochs < 1 or args.batch_size < 1 or args.grad_accum_steps < 1:
         raise SystemExit("epochs, batch-size, and grad-accum-steps must be positive")
     if args.learning_rate <= 0:
@@ -95,7 +117,10 @@ def main() -> int:
     if args.resume and not args.resume.is_file():
         raise SystemExit(f"Resume checkpoint not found: {args.resume}")
     try:
-        validation_report = validate_production_dataset(args.dataset)
+        validation_report = validate_production_dataset(
+            args.dataset,
+            options=DatasetValidationOptions(required_classes=classes),
+        )
     except (ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(f"Dataset validation failed: {exc}") from exc
     printable = {
@@ -117,6 +142,8 @@ def main() -> int:
         "grad_accum_steps": args.grad_accum_steps,
         "lr": args.learning_rate,
         "seed": 42,
+        "num_workers": 0,
+        "tensorboard": False,
     }
     if args.resume:
         train_args["resume"] = str(args.resume.resolve())
@@ -135,6 +162,7 @@ def main() -> int:
         dataset_version=validation_report.fingerprint_sha256,
         model_version=f"scoop-rfdetr-nano-{time.strftime('%Y%m%d-%H%M%S')}",
         input_resolution=args.resolution,
+        classes=classes,
     )
     print(f"Verified model manifest: {args.output / 'model-manifest.json'}")
     print(f"Checkpoint SHA-256: {manifest.checkpoint_sha256}")

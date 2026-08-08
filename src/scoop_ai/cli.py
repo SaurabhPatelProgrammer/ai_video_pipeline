@@ -136,6 +136,11 @@ def _parser() -> argparse.ArgumentParser:
     dataset_commands = dataset.add_subparsers(dest="dataset_command", required=True)
     validate = dataset_commands.add_parser("validate")
     validate.add_argument("--dataset", type=Path, required=True)
+    validate.add_argument(
+        "--classes",
+        default=",".join(("scoop", "loaded_scoop", "serving_container")),
+        help="Comma-separated expected class names.",
+    )
     validate.set_defaults(handler=_dataset_validate)
     split = dataset_commands.add_parser("split")
     split.add_argument("--sessions", type=Path, required=True, help="JSON array of session IDs")
@@ -523,9 +528,15 @@ def _production_readiness(args: argparse.Namespace) -> int:
 
 
 def _dataset_validate(args: argparse.Namespace) -> int:
-    from .training import validate_dataset
+    from .training import DatasetValidationOptions, validate_dataset
 
-    report = validate_dataset(args.dataset)
+    classes = tuple(dict.fromkeys(value.strip() for value in args.classes.split(",") if value.strip()))
+    if not classes:
+        raise ConfigurationError("--classes must contain at least one class")
+    report = validate_dataset(
+        args.dataset,
+        options=DatasetValidationOptions(required_classes=classes),
+    )
     print(json.dumps(asdict(report), default=str, indent=2, sort_keys=True))
     return 0
 

@@ -22,6 +22,7 @@ class DatasetValidationOptions:
     require_source_sha256: bool = True
     hash_images: bool = True
     require_all_classes_per_split: bool = True
+    required_classes: tuple[str, ...] = REQUIRED_CLASSES
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +114,10 @@ def _unique_integer_id_map(
 
 
 def _validate_categories(
-    data: dict[str, Any], split: str, issues: list[str]
+    data: dict[str, Any],
+    split: str,
+    issues: list[str],
+    required_classes: tuple[str, ...],
 ) -> dict[int, str]:
     records = _unique_integer_id_map(
         data.get("categories"), kind="categories", split=split, issues=issues
@@ -130,9 +134,9 @@ def _validate_categories(
             issues.append(f"{split}: duplicate category name {normalized!r}")
         seen_names.add(normalized)
         names[category_id] = normalized
-    if set(names.values()) != set(REQUIRED_CLASSES):
+    if set(names.values()) != set(required_classes):
         issues.append(
-            f"{split}: classes must be exactly {list(REQUIRED_CLASSES)!r}; "
+            f"{split}: classes must be exactly {list(required_classes)!r}; "
             f"received {sorted(names.values())!r}"
         )
     return names
@@ -237,6 +241,8 @@ def validate_dataset(
     """Validate all COCO splits, provenance, leakage, and duplicate content."""
 
     config = options or DatasetValidationOptions()
+    if not config.required_classes or len(config.required_classes) != len(set(config.required_classes)):
+        raise DatasetValidationError(["required_classes must contain unique class names"])
     root = Path(dataset_root)
     issues: list[str] = []
     if not root.is_dir():
@@ -257,7 +263,7 @@ def validate_dataset(
         fingerprint.update(
             json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
         )
-        categories = _validate_categories(data, split, issues)
+        categories = _validate_categories(data, split, issues, config.required_classes)
         images = _unique_integer_id_map(
             data.get("images"), kind="images", split=split, issues=issues
         )
@@ -348,7 +354,7 @@ def validate_dataset(
                 issues.append(f"{split}: annotation {annotation_id} iscrowd must be 0 or 1")
 
         if config.require_all_classes_per_split:
-            missing_classes = set(REQUIRED_CLASSES) - set(class_counts)
+            missing_classes = set(config.required_classes) - set(class_counts)
             if missing_classes:
                 issues.append(
                     f"{split}: no annotations for classes {sorted(missing_classes)!r}"
