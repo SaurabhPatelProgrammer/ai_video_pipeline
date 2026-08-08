@@ -6,6 +6,7 @@ import json
 import math
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -192,6 +193,65 @@ class HealthEventRecord:
         _canonical_json(self.details)
 
 
+@dataclass(frozen=True)
+class AuditLogRecord:
+    audit_id: str
+    occurred_at: str
+    actor: str
+    action: str
+    target: str
+    details: Mapping[str, object] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        if any(not value.strip() for value in (self.audit_id, self.actor, self.action, self.target)):
+            raise ValueError("audit_id, actor, action and target are required")
+        _validate_timestamp(self.occurred_at, "occurred_at")
+        _canonical_json(self.details)
+
+
+@dataclass(frozen=True)
+class TelemetryRecord:
+    telemetry_id: str
+    camera_id: str
+    observed_at: str
+    fps: float
+    blur_variance: float
+    changed_fraction: float
+    accepted: bool
+
+    def validate(self) -> None:
+        if not self.telemetry_id.strip() or not self.camera_id.strip():
+            raise ValueError("telemetry_id and camera_id are required")
+        _validate_timestamp(self.observed_at, "observed_at")
+        if not all(math.isfinite(value) and value >= 0 for value in (
+            self.fps, self.blur_variance, self.changed_fraction,
+        )):
+            raise ValueError("telemetry values must be finite and non-negative")
+        if self.changed_fraction > 1:
+            raise ValueError("changed_fraction cannot exceed 1")
+
+
+@dataclass(frozen=True)
+class OutboxRecord:
+    event_id: str
+    payload: Mapping[str, object]
+    state: str = "pending"
+    attempts: int = 0
+    next_attempt_at: str | None = None
+    last_error: str | None = None
+    signature: str | None = None
+    updated_at: str = ""
+
+    def validate(self) -> None:
+        if not self.event_id.strip():
+            raise ValueError("outbox event_id is required")
+        if self.state not in {"pending", "exported", "acknowledged", "failed", "dead_letter"}:
+            raise ValueError("unsupported outbox state")
+        if self.attempts < 0:
+            raise ValueError("outbox attempts cannot be negative")
+        _canonical_json(self.payload)
+
+
 class EventConflictError(RuntimeError):
     """Raised when an event ID is reused with a different payload."""
 
@@ -358,6 +418,7 @@ class SQLiteEventRepository:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._last_write_lock_seconds = 0.0
         self._connection = sqlite3.connect(
             self.path,
             timeout=max(0, busy_timeout_ms) / 1000,
@@ -407,11 +468,80 @@ class SQLiteEventRepository:
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (version, utc_now_iso()),
                 )
+            # Governance tables are additive and intentionally kept outside the
+            # public schema version so existing v2 installations upgrade safely.
+            connection.execute("""CREATE TABLE IF NOT EXISTS active_models (
+                    camera_id TEXT PRIMARY KEY,
+                    model_version TEXT NOT NULL REFERENCES model_versions(model_version),
+                    manifest_sha256 TEXT NOT NULL,
+                    approved_by TEXT NOT NULL,
+                    activated_at TEXT NOT NULL
+                )""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS model_activation_history (
+                    activation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    camera_id TEXT NOT NULL,
+                    model_version TEXT NOT NULL REFERENCES model_versions(model_version),
+                    action TEXT NOT NULL CHECK(action IN ('promote','rollback')),
+                    approved_by TEXT NOT NULL,
+                    changed_at TEXT NOT NULL
+                )""")
+            connection.execute("""CREATE INDEX IF NOT EXISTS model_activation_camera_idx
+                    ON model_activation_history(camera_id, activation_id);
+                """)
+            connection.execute("""CREATE TABLE IF NOT EXISTS audit_logs (
+                    audit_id TEXT PRIMARY KEY,
+                    occurred_at TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    details_json TEXT NOT NULL
+                )""")
+            connection.execute("""CREATE INDEX IF NOT EXISTS audit_logs_time_idx
+                    ON audit_logs(occurred_at, audit_id)
+                """)
+            connection.execute("""CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
+                    BEFORE UPDATE ON audit_logs BEGIN
+                        SELECT RAISE(ABORT, 'audit logs are immutable');
+                    END
+                """)
+            connection.execute("""CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete
+                    BEFORE DELETE ON audit_logs BEGIN
+                        SELECT RAISE(ABORT, 'audit logs are immutable');
+                    END
+                """)
+            connection.execute("""CREATE TABLE IF NOT EXISTS pilot_telemetry (
+                    telemetry_id TEXT PRIMARY KEY,
+                    camera_id TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    fps REAL NOT NULL,
+                    blur_variance REAL NOT NULL,
+                    changed_fraction REAL NOT NULL,
+                    accepted INTEGER NOT NULL CHECK(accepted IN (0,1))
+                )""")
+            connection.execute("""CREATE INDEX IF NOT EXISTS pilot_telemetry_time_idx
+                    ON pilot_telemetry(camera_id, observed_at)
+                """)
+            connection.execute("""CREATE TABLE IF NOT EXISTS event_outbox (
+                    event_id TEXT PRIMARY KEY REFERENCES events(event_id),
+                    payload_json TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('pending','exported','acknowledged','failed','dead_letter')),
+                    attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+                    next_attempt_at TEXT,
+                    last_error TEXT,
+                    signature TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )""")
+            connection.execute("""CREATE INDEX IF NOT EXISTS event_outbox_poll_idx
+                    ON event_outbox(state, next_attempt_at, updated_at)
+                """)
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
+        started = time.perf_counter()
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
+            self._last_write_lock_seconds = time.perf_counter() - started
             try:
                 yield self._connection
             except BaseException:
@@ -419,6 +549,11 @@ class SQLiteEventRepository:
                 raise
             else:
                 self._connection.commit()
+
+    @property
+    def last_write_lock_seconds(self) -> float:
+        with self._lock:
+            return self._last_write_lock_seconds
 
     @property
     def schema_version(self) -> int:
@@ -631,6 +766,74 @@ class SQLiteEventRepository:
             )
             return bool(cursor.rowcount)
 
+    def promote_model(
+        self,
+        *,
+        camera_id: str,
+        model_version: str,
+        manifest_sha256: str,
+        approved_by: str,
+        changed_at: str,
+        action: str = "promote",
+    ) -> None:
+        if action not in {"promote", "rollback"}:
+            raise ValueError("unsupported model activation action")
+        if not camera_id.strip() or not model_version.strip() or not approved_by.strip():
+            raise ValueError("camera_id, model_version and approved_by are required")
+        _validate_digest(manifest_sha256, "manifest_sha256")
+        changed_at = _normalize_timestamp(changed_at, "changed_at")
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT approved_at FROM model_versions WHERE model_version = ?",
+                (model_version,),
+            ).fetchone()
+            if row is None or row[0] is None:
+                raise ValueError("only registered approved models can be activated")
+            connection.execute(
+                """INSERT INTO active_models(camera_id, model_version, manifest_sha256, approved_by, activated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(camera_id) DO UPDATE SET model_version=excluded.model_version,
+                   manifest_sha256=excluded.manifest_sha256, approved_by=excluded.approved_by,
+                   activated_at=excluded.activated_at""",
+                (camera_id, model_version, manifest_sha256.lower(), approved_by, changed_at),
+            )
+            connection.execute(
+                """INSERT INTO model_activation_history(camera_id, model_version, action, approved_by, changed_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (camera_id, model_version, action, approved_by, changed_at),
+            )
+
+    def active_model(self, camera_id: str) -> dict[str, str] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT camera_id, model_version, manifest_sha256, approved_by, activated_at "
+                "FROM active_models WHERE camera_id = ?", (camera_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def rollback_model(self, *, camera_id: str, approved_by: str, changed_at: str) -> dict[str, str]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT model_version FROM model_activation_history WHERE camera_id = ? "
+                "ORDER BY activation_id DESC", (camera_id,)
+            ).fetchall()
+        active = self.active_model(camera_id)
+        active_version = active["model_version"] if active else None
+        target = next((str(row[0]) for row in rows if str(row[0]) != active_version), None)
+        if target is None:
+            raise ValueError(f"no prior approved model exists for camera {camera_id!r}")
+        model = self._connection.execute(
+            "SELECT checkpoint_sha256 FROM model_versions WHERE model_version = ?", (target,)
+        ).fetchone()
+        assert model is not None
+        self.promote_model(
+            camera_id=camera_id, model_version=target, manifest_sha256=str(model[0]),
+            approved_by=approved_by, changed_at=changed_at, action="rollback",
+        )
+        result = self.active_model(camera_id)
+        assert result is not None
+        return result
+
     def register_evidence(self, evidence: EvidenceRecord) -> bool:
         evidence.validate()
         with self.transaction() as connection:
@@ -753,7 +956,103 @@ class SQLiteEventRepository:
             )
             if event_cursor.rowcount != 1:
                 raise KeyError(f"unknown event_id: {review.event_id}")
+            if latest["decision"] == "accepted":
+                event = connection.execute(
+                    "SELECT * FROM events WHERE event_id = ?", (review.event_id,)
+                ).fetchone()
+                assert event is not None
+                payload = {key: event[key] for key in (
+                    "event_id", "session_id", "camera_id", "event_type", "occurred_at",
+                    "confidence", "model_version", "container_track_id", "scoop_track_id",
+                    "evidence_path", "evidence_sha256", "metadata_json",
+                )}
+                now = utc_now_iso()
+                connection.execute(
+                    """INSERT INTO event_outbox(event_id, payload_json, state, attempts, created_at, updated_at)
+                       VALUES (?, ?, 'pending', 0, ?, ?)
+                       ON CONFLICT(event_id) DO UPDATE SET state='pending', updated_at=excluded.updated_at
+                       WHERE event_outbox.state IN ('failed','dead_letter')""",
+                    (review.event_id, _canonical_json(payload), now, now),
+                )
             return True
+
+    def list_outbox(self, *, states: set[str] | None = None, limit: int = 1000) -> list[OutboxRecord]:
+        if not 1 <= limit <= 10_000:
+            raise ValueError("limit must be between 1 and 10000")
+        allowed = {"pending", "exported", "acknowledged", "failed", "dead_letter"}
+        selected = states or allowed
+        if not selected or not selected.issubset(allowed):
+            raise ValueError("unsupported outbox state filter")
+        placeholders = ",".join("?" for _ in selected)
+        with self._lock:
+            rows = self._connection.execute(
+                f"SELECT * FROM event_outbox WHERE state IN ({placeholders}) ORDER BY updated_at, event_id LIMIT ?",
+                (*sorted(selected), limit),
+            ).fetchall()
+        return [self._outbox_from_row(row) for row in rows]
+
+    def claim_outbox(self, *, limit: int = 20, now: str | None = None) -> list[OutboxRecord]:
+        now = _normalize_timestamp(now or utc_now_iso(), "now")
+        with self.transaction() as connection:
+            rows = connection.execute(
+                """SELECT o.* FROM event_outbox o JOIN events e ON e.event_id=o.event_id
+                   WHERE o.state IN ('pending','failed') AND e.review_state='accepted'
+                   AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= ?)
+                   ORDER BY o.updated_at, o.event_id LIMIT ?""", (now, limit)
+            ).fetchall()
+            for row in rows:
+                connection.execute(
+                    "UPDATE event_outbox SET state='exported', updated_at=? WHERE event_id=?",
+                    (now, row["event_id"]),
+                )
+        return [self._outbox_from_row(row, state_override="exported") for row in rows]
+
+    def mark_outbox_acknowledged(self, event_id: str, *, signature: str, updated_at: str | None = None) -> None:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE event_outbox SET state='acknowledged', signature=?, last_error=NULL, updated_at=? WHERE event_id=?",
+                (signature, _normalize_timestamp(updated_at or utc_now_iso(), "updated_at"), event_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"unknown outbox event {event_id!r}")
+
+    def mark_outbox_failure(self, event_id: str, *, error: str, next_attempt_at: str | None, max_attempts: int) -> str:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        with self.transaction() as connection:
+            row = connection.execute("SELECT attempts FROM event_outbox WHERE event_id=?", (event_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"unknown outbox event {event_id!r}")
+            attempts = int(row[0]) + 1
+            state = "dead_letter" if attempts >= max_attempts else "failed"
+            connection.execute(
+                "UPDATE event_outbox SET state=?, attempts=?, last_error=?, next_attempt_at=?, updated_at=? WHERE event_id=?",
+                (state, attempts, error[:1000], next_attempt_at, utc_now_iso(), event_id),
+            )
+        return state
+
+    def retry_outbox(self, *, event_id: str | None = None, reset_attempts: bool = True) -> int:
+        with self.transaction() as connection:
+            clauses = ["state IN ('failed','dead_letter')"]
+            params: list[object] = []
+            if event_id:
+                clauses.append("event_id=?")
+                params.append(event_id)
+            attempts = "0" if reset_attempts else "attempts"
+            cursor = connection.execute(
+                f"UPDATE event_outbox SET state='pending', attempts={attempts}, next_attempt_at=NULL, last_error=NULL, updated_at=? WHERE {' AND '.join(clauses)}",
+                (utc_now_iso(), *params),
+            )
+            return int(cursor.rowcount)
+
+    @staticmethod
+    def _outbox_from_row(row: sqlite3.Row, *, state_override: str | None = None) -> OutboxRecord:
+        return OutboxRecord(
+            event_id=row["event_id"], payload=json.loads(row["payload_json"]),
+            state=state_override or row["state"], attempts=int(row["attempts"]),
+            next_attempt_at=row["next_attempt_at"], last_error=row["last_error"],
+            signature=row["signature"], updated_at=row["updated_at"],
+        )
 
     def list_reviews(self, event_id: str) -> list[ReviewRecord]:
         with self._lock:
@@ -824,6 +1123,110 @@ class SQLiteEventRepository:
                 ),
             )
             return bool(cursor.rowcount)
+
+    def record_audit(self, record: AuditLogRecord) -> bool:
+        record.validate()
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """INSERT INTO audit_logs(audit_id, occurred_at, actor, action, target, details_json)
+                   VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(audit_id) DO NOTHING""",
+                (
+                    record.audit_id,
+                    _normalize_timestamp(record.occurred_at, "occurred_at"),
+                    record.actor,
+                    record.action,
+                    record.target,
+                    _canonical_json(record.details),
+                ),
+            )
+            return bool(cursor.rowcount)
+
+    def list_audit_logs(self, *, limit: int = 1000) -> list[AuditLogRecord]:
+        if not 1 <= limit <= 10_000:
+            raise ValueError("limit must be between 1 and 10000")
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM audit_logs ORDER BY occurred_at, audit_id LIMIT ?", (limit,)
+            ).fetchall()
+        return [AuditLogRecord(
+            audit_id=row["audit_id"], occurred_at=row["occurred_at"], actor=row["actor"],
+            action=row["action"], target=row["target"], details=json.loads(row["details_json"]),
+        ) for row in rows]
+
+    def record_telemetry(self, record: TelemetryRecord) -> bool:
+        record.validate()
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """INSERT INTO pilot_telemetry(
+                    telemetry_id, camera_id, observed_at, fps, blur_variance,
+                    changed_fraction, accepted
+                ) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(telemetry_id) DO NOTHING""",
+                (
+                    record.telemetry_id, record.camera_id,
+                    _normalize_timestamp(record.observed_at, "observed_at"),
+                    record.fps, record.blur_variance, record.changed_fraction,
+                    int(record.accepted),
+                ),
+            )
+            return bool(cursor.rowcount)
+
+    def pilot_report(self, *, camera_id: str | None = None) -> dict[str, object]:
+        clauses = ["1=1"]
+        params: list[object] = []
+        if camera_id:
+            clauses.append("s.camera_id = ?")
+            params.append(camera_id)
+        where = " AND ".join(clauses)
+        with self._lock:
+            sessions = self._connection.execute(
+                f"SELECT started_at, finished_at, status FROM sessions s WHERE {where}", params
+            ).fetchall()
+            telemetry = self._connection.execute(
+                "SELECT COUNT(*) AS samples, AVG(fps) AS avg_fps, AVG(blur_variance) AS avg_blur, "
+                "AVG(changed_fraction) AS avg_changed, SUM(accepted) AS accepted "
+                "FROM pilot_telemetry WHERE camera_id = COALESCE(?, camera_id)",
+                (camera_id,),
+            ).fetchone()
+            event_where = "WHERE camera_id = COALESCE(?, camera_id)"
+            candidates = self._connection.execute(
+                f"SELECT COUNT(*) FROM events {event_where}", (camera_id,)
+            ).fetchone()[0]
+            reviews = self._connection.execute(
+                "SELECT COUNT(*) AS total, SUM(CASE WHEN decision='accepted' THEN 1 ELSE 0 END) AS accepted "
+                "FROM event_reviews r JOIN events e ON e.event_id = r.event_id "
+                "WHERE e.camera_id = COALESCE(?, e.camera_id)", (camera_id,)
+            ).fetchone()
+            health = self._connection.execute(
+                "SELECT COUNT(*) AS total, SUM(CASE WHEN state IN ('degraded','unhealthy') THEN 1 ELSE 0 END) AS errors "
+                "FROM health_events WHERE camera_id = COALESCE(?, camera_id)", (camera_id,)
+            ).fetchone()
+        from datetime import datetime, timezone
+        uptime = 0.0
+        for row in sessions:
+            start = datetime.fromisoformat(row["started_at"].replace("Z", "+00:00"))
+            end = datetime.fromisoformat(row["finished_at"].replace("Z", "+00:00")) if row["finished_at"] else datetime.now(timezone.utc)
+            uptime += max(0.0, (end - start).total_seconds())
+        review_total = int(reviews["total"] or 0)
+        accepted_reviews = int(reviews["accepted"] or 0)
+        return {
+            "camera_id": camera_id,
+            "sessions": len(sessions),
+            "system_uptime_seconds": round(uptime, 3),
+            "candidate_events": int(candidates),
+            "manual_reviews": review_total,
+            "review_agreement_rate": round(accepted_reviews / review_total, 6) if review_total else None,
+            "frame_quality": {
+                "telemetry_samples": int(telemetry["samples"] or 0),
+                "average_fps": round(float(telemetry["avg_fps"] or 0), 6),
+                "average_blur_variance": round(float(telemetry["avg_blur"] or 0), 6),
+                "average_changed_fraction": round(float(telemetry["avg_changed"] or 0), 6),
+                "accepted_frames": int(telemetry["accepted"] or 0),
+            },
+            "alerts_and_errors": {
+                "health_events": int(health["total"] or 0),
+                "degraded_or_unhealthy": int(health["errors"] or 0),
+            },
+        }
 
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> EventRecord:

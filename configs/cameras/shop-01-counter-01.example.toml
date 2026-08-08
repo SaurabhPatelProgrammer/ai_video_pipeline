@@ -6,6 +6,10 @@ mode = "live"
 # the RTSP URL/password in version-controlled configuration.
 credential_key = "scoop-ai/shop-01-counter-01/rtsp-url"
 analysis_fps = 10.0
+# Generate this versioned profile with `scoop-ai recalibrate` before production.
+calibration_profile = "D:\\ip-camera-ai-data\\calibration\\shop-01-counter-01.json"
+expected_width = 1920
+expected_height = 1080
 
 [zones]
 # Normalized points must be recalibrated against the locked production view.
@@ -17,6 +21,10 @@ minimum_blur_variance = 20.0
 pixel_change_threshold = 35
 maximum_changed_fraction = 0.65
 analysis_width = 320
+reference_drift_threshold = 0.20
+zone_change_threshold = 0.45
+obstruction_seconds = 1.0
+minimum_fps_ratio = 0.50
 
 [event]
 minimum_confidence = 0.35

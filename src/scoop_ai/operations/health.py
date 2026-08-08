@@ -92,10 +92,12 @@ class HealthRegistry:
         self,
         *,
         stale_after_seconds: float = 10.0,
+        stale_state: HealthState = HealthState.UNHEALTHY,
         monotonic_now: float | None = None,
     ) -> HealthSnapshot:
         if stale_after_seconds <= 0:
             raise ValueError("stale_after_seconds must be positive")
+        stale_state = HealthState(stale_state)
         now = time.monotonic() if monotonic_now is None else monotonic_now
         with self._lock:
             components = dict(self._components)
@@ -111,7 +113,7 @@ class HealthRegistry:
                 HealthState.UNHEALTHY,
                 HealthState.STOPPING,
             }:
-                state = HealthState.UNHEALTHY
+                state = stale_state
                 message = f"stale heartbeat ({age:.1f}s)"
             effective_states[name] = state
             output.append(
@@ -152,10 +154,14 @@ class HealthRegistry:
 class MetricsRegistry:
     """Small thread-safe metric collector suitable for JSON/status export."""
 
-    def __init__(self, *, sample_limit: int = 2048) -> None:
+    def __init__(self, *, sample_limit: int = 2048, max_metric_names: int = 128) -> None:
         if sample_limit <= 0:
             raise ValueError("sample_limit must be positive")
+        if max_metric_names <= 0:
+            raise ValueError("max_metric_names must be positive")
         self._sample_limit = sample_limit
+        self._max_metric_names = max_metric_names
+        self._known_names: set[str] = set()
         self._counters: dict[str, float] = defaultdict(float)
         self._gauges: dict[str, float] = {}
         self._samples: dict[str, deque[float]] = {}
@@ -168,21 +174,31 @@ class MetricsRegistry:
         if not math.isfinite(value):
             raise ValueError("metric value must be finite")
 
+    def _claim_name(self, name: str) -> None:
+        if name in self._known_names:
+            return
+        if len(self._known_names) >= self._max_metric_names:
+            raise ValueError("metric name cardinality limit exceeded")
+        self._known_names.add(name)
+
     def increment(self, name: str, amount: float = 1.0) -> None:
         self._validate(name, amount)
         if amount < 0:
             raise ValueError("counter increments cannot be negative")
         with self._lock:
+            self._claim_name(name)
             self._counters[name] += amount
 
     def gauge(self, name: str, value: float) -> None:
         self._validate(name, value)
         with self._lock:
+            self._claim_name(name)
             self._gauges[name] = value
 
     def observe(self, name: str, value: float) -> None:
         self._validate(name, value)
         with self._lock:
+            self._claim_name(name)
             samples = self._samples.setdefault(name, deque(maxlen=self._sample_limit))
             samples.append(value)
 

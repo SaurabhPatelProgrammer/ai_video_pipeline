@@ -18,23 +18,37 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from ..capture import LiveFrameSource, RecordedFrameSource
+from ..calibration import SceneQualityGuard, load_reference_fingerprint
 from ..config import load_camera_config, load_service_config
 from ..domain import DepositFSMConfig, ReleaseAwareDepositFSM
 from ..inference import (
     RFDETRLocalAdapter,
     SupervisionByteTrackAdapter,
+    validate_model_camera_compatibility,
+    verify_manifest_approval,
     observations_from_detections,
 )
-from ..operations import HealthRegistry, HealthState, MetricsRegistry
+from ..operations import (
+    AlertMonitor,
+    AlertThresholds,
+    HealthRegistry,
+    HealthState,
+    MetricsRegistry,
+    OutboxWorker,
+    ServiceWatchdog,
+    assert_silent_pilot,
+)
 from ..operations.logging import configure_structured_logging, log_context
 from ..security import resolve_credential, safe_source_name
 from ..storage import (
+    AuditLogRecord,
     EvidenceRecord,
     EvidenceWriter,
     EventRecord,
     ModelVersionRecord,
     SessionRecord,
     SQLiteEventRepository,
+    TelemetryRecord,
 )
 from ..storage.database import HealthEventRecord, utc_now_iso
 from .quality import FrameQualityGate
@@ -63,7 +77,7 @@ class _StatusEndpoint:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
                 if self.path == "/health":
-                    snapshot = owner.health.snapshot()
+                    snapshot = owner.health.snapshot(stale_state=HealthState.DEGRADED)
                     body = json.dumps(asdict(snapshot), default=str).encode("utf-8")
                     self.send_response(200 if snapshot.live else 503)
                 elif self.path == "/metrics":
@@ -116,7 +130,12 @@ def _expire_evidence(repository: SQLiteEventRepository, evidence_root: Path) -> 
         except OSError:
             LOGGER.exception("Evidence retention delete failed", extra={"path": record.relative_path})
             continue
-        repository.mark_evidence_deleted(record.evidence_id)
+        if repository.mark_evidence_deleted(record.evidence_id):
+            repository.record_audit(AuditLogRecord(
+                audit_id=str(uuid.uuid4()), occurred_at=utc_now_iso(), actor="service",
+                action="retention_evidence_deletion", target=record.relative_path,
+                details={"evidence_id": record.evidence_id},
+            ))
 
 
 def reconcile_startup(
@@ -266,6 +285,7 @@ def run_service(
     """Run until a shutdown signal, recorded EOF, or an unrecoverable failure."""
 
     service_config = load_service_config(service_config_path)
+    assert_silent_pilot(service_config)
     camera_config = load_camera_config(camera_config_path)
     configure_structured_logging(
         level=service_config.log_level,
@@ -275,6 +295,25 @@ def run_service(
         raise RuntimeError(f"camera {camera_config.camera_id} is disabled")
     if camera_config.tub_zone is None or camera_config.serving_zone is None:
         raise RuntimeError("production camera config requires tub and serving zones")
+    manifest = verify_manifest_approval(
+        checkpoint_manifest_path,
+        approved_reviewers=service_config.approved_reviewers,
+        require_approval=service_config.environment == "production",
+    )
+    validate_model_camera_compatibility(manifest, camera_config)
+    scene_guard = None
+    if camera_config.calibration_profile is not None:
+        scene_guard = SceneQualityGuard(
+            load_reference_fingerprint(camera_config.calibration_profile),
+            tub_zone=camera_config.tub_zone,
+            serving_zone=camera_config.serving_zone,
+            drift_threshold=camera_config.quality.reference_drift_threshold,
+            zone_change_threshold=camera_config.quality.zone_change_threshold,
+            obstruction_seconds=camera_config.quality.obstruction_seconds,
+            pixel_change_threshold=camera_config.quality.pixel_change_threshold,
+        )
+    elif service_config.environment == "production":
+        raise RuntimeError("production camera config requires calibration_profile")
     source = camera_config.resolve_source(credential_resolver=resolve_credential)
     artifact_root = service_config.artifact_root.resolve()
     database_path = artifact_root / "database" / "events.sqlite3"
@@ -307,6 +346,16 @@ def run_service(
     )
     evidence_writer = EvidenceWriter(evidence_root)
     repository = SQLiteEventRepository(database_path)
+    active_model = repository.active_model(camera_config.camera_id)
+    if service_config.environment == "production":
+        if active_model is None:
+            repository.close()
+            raise RuntimeError(
+                f"no active approved model is registered for camera {camera_config.camera_id!r}"
+            )
+        if active_model["model_version"] != manifest.model_version:
+            repository.close()
+            raise RuntimeError("checkpoint manifest does not match the active camera model")
 
     # ── Phase 1: startup reconciliation ──────────────────────────────────
     try:
@@ -325,6 +374,7 @@ def run_service(
                 "dataset_version": detector.manifest.dataset_version,
                 "classes": list(detector.manifest.classes),
                 "input_resolution": detector.manifest.input_resolution,
+                "approved_by": manifest.approved_by,
             },
         )
     )
@@ -336,14 +386,20 @@ def run_service(
             started_at=utc_now_iso(),
             model_version=detector.manifest.model_version,
             source_name=safe_source_name(source),
-            metadata={"mode": camera_config.mode},
+            metadata={"mode": camera_config.mode, "active_model": active_model},
         )
     )
 
     health = HealthRegistry(required_components={"capture", "inference", "storage"})
     metrics = MetricsRegistry()
     health.report("capture", HealthState.STARTING, "opening source")
-    health.report("inference", HealthState.STARTING, "model not warmed")
+    health.report(
+        "inference", HealthState.STARTING, "model not warmed",
+        details={
+            "model_version": detector.manifest.model_version,
+            "active_model": active_model,
+        },
+    )
     health.report("storage", HealthState.HEALTHY, "SQLite WAL ready")
     try:
         status_endpoint = _StatusEndpoint(
@@ -370,8 +426,12 @@ def run_service(
     next_media_sample = 0.0
     last_live_inference = 0.0
     last_retention = 0.0
+    last_inference_completed = time.monotonic()
     failed = False
     reader = None
+    watchdog = None
+    alert_monitor = None
+    outbox_worker = None
     try:
         if camera_config.mode == "recorded":
             if not isinstance(source, str):
@@ -388,11 +448,49 @@ def run_service(
                 open_timeout_ms=camera_config.capture.open_timeout_ms,
                 read_timeout_ms=camera_config.capture.read_timeout_ms,
             ).start()
+        watchdog = ServiceWatchdog(
+            health,
+            stopping,
+            reader_supplier=lambda: reader,
+            inference_completed_at=lambda: last_inference_completed,
+        ).start()
+        alert_monitor = AlertMonitor(
+            health,
+            metrics,
+            repository,
+            camera_id=camera_config.camera_id,
+            artifact_root=artifact_root,
+            reader_supplier=lambda: reader,
+            thresholds=AlertThresholds(
+                poll_seconds=service_config.alerts.poll_seconds,
+                stale_after_seconds=service_config.alerts.stale_after_seconds,
+                reconnect_warning=service_config.alerts.reconnect_warning,
+                reconnect_critical=service_config.alerts.reconnect_critical,
+                low_disk_warning_gb=service_config.alerts.low_disk_warning_gb,
+                low_disk_critical_gb=service_config.alerts.low_disk_critical_gb,
+            ),
+            stop_event=stopping,
+        ).start()
+        if service_config.export.enabled:
+            assert service_config.export.endpoint is not None
+            assert service_config.export.signing_key_credential is not None
+            signing_key = resolve_credential(service_config.export.signing_key_credential).encode("utf-8")
+            outbox_worker = OutboxWorker(
+                repository,
+                endpoint=service_config.export.endpoint,
+                signing_key=signing_key,
+                stop_event=stopping,
+                poll_seconds=service_config.export.poll_seconds,
+                max_attempts=service_config.export.max_attempts,
+                backoff_seconds=service_config.export.backoff_seconds,
+            )
+            outbox_worker.start()
         with log_context(camera_id=camera_config.camera_id, session_id=session_id):
             while not stopping.is_set():
                 if camera_config.mode == "recorded":
                     packet = reader.read()
                     if packet is None:
+                        last_inference_completed = time.monotonic()
                         break
                     if packet.timestamp_seconds + 1e-9 < next_media_sample:
                         continue
@@ -403,12 +501,14 @@ def run_service(
                         timeout=camera_config.capture.read_wait_seconds,
                     )
                     if packet is None:
+                        last_inference_completed = time.monotonic()
                         frame_age = reader.frame_age_seconds
                         metrics.gauge("last_frame_age_seconds", frame_age or 0.0)
                         health.report("capture", HealthState.DEGRADED, reader.health.detail)
                         continue
                     now = time.monotonic()
                     if now - last_live_inference < 1.0 / camera_config.analysis_fps:
+                        last_inference_completed = time.monotonic()
                         sequence = packet.sequence
                         continue
                     last_live_inference = now
@@ -416,10 +516,61 @@ def run_service(
                 metrics.increment("frames_received_total")
                 health.report("capture", HealthState.HEALTHY, "receiving frames")
 
+                # stream_fps must be resolved before the telemetry write below
+                # consumes it.
+                stream_fps = float(getattr(reader.health, "frames_per_second", 0.0))
                 assessment = quality_gate.assess(packet.frame)
+                repository.record_telemetry(TelemetryRecord(
+                    telemetry_id=str(uuid.uuid4()), camera_id=camera_config.camera_id,
+                    observed_at=_utc_from_packet(packet),
+                    fps=stream_fps, blur_variance=assessment.blur_variance,
+                    changed_fraction=assessment.changed_fraction,
+                    accepted=assessment.acceptable,
+                ))
+                metrics.gauge("camera_fps", stream_fps)
+                metrics.gauge("camera_width_pixels", float(packet.frame.shape[1]))
+                metrics.gauge("camera_height_pixels", float(packet.frame.shape[0]))
+                if (
+                    camera_config.expected_width is not None
+                    and camera_config.expected_height is not None
+                    and (packet.frame.shape[1], packet.frame.shape[0])
+                    != (camera_config.expected_width, camera_config.expected_height)
+                ):
+                    metrics.increment("frames_quality_rejected_total")
+                    health.report(
+                        "capture",
+                        HealthState.DEGRADED,
+                        "camera resolution differs from approved configuration",
+                        details={
+                            "actual_width": packet.frame.shape[1],
+                            "actual_height": packet.frame.shape[0],
+                            "expected_width": camera_config.expected_width,
+                            "expected_height": camera_config.expected_height,
+                        },
+                    )
+                    last_inference_completed = time.monotonic()
+                    continue
+                if (
+                    reader.health.frames_received >= 5
+                    and stream_fps > 0
+                    and stream_fps < camera_config.analysis_fps * camera_config.quality.minimum_fps_ratio
+                ):
+                    metrics.increment("frames_quality_rejected_total")
+                    health.report(
+                        "capture",
+                        HealthState.DEGRADED,
+                        "camera FPS is below the approved minimum",
+                        details={
+                            "actual_fps": stream_fps,
+                            "minimum_fps": camera_config.analysis_fps * camera_config.quality.minimum_fps_ratio,
+                        },
+                    )
+                    last_inference_completed = time.monotonic()
+                    continue
                 metrics.gauge("frame_blur_variance", assessment.blur_variance)
                 metrics.gauge("frame_changed_fraction", assessment.changed_fraction)
                 if not assessment.acceptable:
+                    last_inference_completed = time.monotonic()
                     metrics.increment("frames_quality_rejected_total")
                     health.report(
                         "capture",
@@ -427,6 +578,29 @@ def run_service(
                         ",".join(assessment.reasons),
                     )
                     continue
+
+                if scene_guard is not None:
+                    scene = scene_guard.assess(
+                        packet.frame,
+                        timestamp_seconds=packet.observed_monotonic_seconds,
+                    )
+                    metrics.gauge("scene_drift_score", scene.drift_score)
+                    metrics.gauge("tub_zone_changed_fraction", scene.tub_changed_fraction)
+                    metrics.gauge("serving_zone_changed_fraction", scene.serving_changed_fraction)
+                    if not scene.acceptable:
+                        metrics.increment("frames_quality_rejected_total")
+                        health.report(
+                            "capture",
+                            HealthState.DEGRADED,
+                            ",".join(scene.reasons),
+                            details={
+                                "drift_score": scene.drift_score,
+                                "tub_changed_fraction": scene.tub_changed_fraction,
+                                "serving_changed_fraction": scene.serving_changed_fraction,
+                            },
+                        )
+                        last_inference_completed = time.monotonic()
+                        continue
 
                 started = time.perf_counter()
                 rgb = cv2.cvtColor(packet.frame, cv2.COLOR_BGR2RGB)
@@ -441,8 +615,10 @@ def run_service(
                 events = event_engine.update(packet.timestamp_seconds, observations)
                 inference_seconds = time.perf_counter() - started
                 metrics.observe("inference_latency_seconds", inference_seconds)
+                metrics.gauge("inference_latency_seconds_last", inference_seconds)
                 metrics.increment("frames_processed_total")
                 health.report("inference", HealthState.HEALTHY, "inference completed")
+                last_inference_completed = time.monotonic()
 
                 for event in events:
                     event_id = str(uuid.uuid4())
@@ -505,6 +681,12 @@ def run_service(
     finally:
         stopping.set()
         health.mark_stopping()
+        if alert_monitor is not None:
+            alert_monitor.stop(timeout=service_config.shutdown_timeout_seconds)
+        if outbox_worker is not None:
+            outbox_worker.join(timeout=service_config.shutdown_timeout_seconds)
+        if watchdog is not None:
+            watchdog.stop(timeout=service_config.shutdown_timeout_seconds)
         if reader is not None:
             reader.stop()
         status_endpoint.stop()

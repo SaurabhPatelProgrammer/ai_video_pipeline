@@ -35,7 +35,7 @@ view. Do not put RTSP credentials in TOML, `.env`, command history, or service
 arguments. Provision the complete RTSP URL in Windows Credential Manager:
 
 ```powershell
-.\.venv\Scripts\scoop-ai.exe credential-set --key scoop-ai/shop-01-counter-01/rtsp-url
+.\.venv\Scripts\scoop-ai.exe credential-set --key scoop-ai/shop-01-counter-01/rtsp-url --database D:\ip-camera-ai-data\database\events.sqlite3
 ```
 
 Validate connectivity:
@@ -45,6 +45,21 @@ Validate connectivity:
   --camera-config configs\cameras\shop-01-counter-01.toml `
   --frames 30
 ```
+
+Create the versioned calibration profile from the same approved camera view;
+it stores an immutable reference fingerprint used to suppress inference after
+camera movement or zone obstruction:
+
+```powershell
+.\.venv\Scripts\scoop-ai.exe recalibrate `
+  --source <camera-or-recording> `
+  --base-profile D:\ip-camera-ai-data\models\scoop-v1\profile.json `
+  --output D:\ip-camera-ai-data\calibration\shop-01-counter-01.json
+```
+
+Set `camera.calibration_profile` in the camera TOML to this approved profile.
+In production, the service refuses to start without it. A new mount, zoom,
+resolution, or zone layout requires a new versioned profile and review.
 
 ## Dataset and model gate
 
@@ -123,11 +138,20 @@ is at most 2%.
 ## Operational rules
 
 - Evidence retention is 14 days; the service removes expired registered files.
+- Back up the active SQLite database with `database-backup`; do not copy the
+  live `.sqlite3` file directly because its WAL may contain committed data.
+  Retain backup metadata alongside each generation and rehearse restore to a
+  separate directory before changing the active artifact root.
+- The service reconciles the evidence directory against the database at every
+  startup, recovering orphaned files that a crash left unregistered and
+  flagging database records whose files went missing outside its control. Run
+  `scoop-ai consistency-check --database ... --evidence-root ...` on demand;
+  see [Evidence/database consistency drift](RUNBOOKS.md#evidencedatabase-consistency-drift).
 - Raw video stays local and face recognition is prohibited.
 - A moved, obstructed or badly blurred camera suppresses inference and marks
   health degraded.
 - Deploy only checksum-approved model manifests. Roll back by restoring the
   prior manifest path and restarting the service.
 - Keep [`RUNBOOKS.md`](RUNBOOKS.md) with the device and rehearse camera-loss,
-  invalid-credential, GPU-OOM, disk-pressure, SQLite-recovery, clock-drift and
-  model-rollback procedures before pilot launch.
+  invalid-credential, GPU-OOM, disk-pressure, SQLite-recovery, clock-drift,
+  calibration-drift and model-rollback procedures before pilot launch.

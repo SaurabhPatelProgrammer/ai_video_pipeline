@@ -187,6 +187,7 @@ class LiveFrameSource:
                         frame_received=True,
                         at_utc=observed_at,
                         at_monotonic=observed_monotonic,
+                        sequence=self._sequence,
                     )
             except Exception as exc:  # keep the capture worker observable and alive
                 LOGGER.exception("Capture failure for %s", self.source_id)

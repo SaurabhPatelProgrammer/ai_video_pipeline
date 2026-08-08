@@ -71,7 +71,8 @@ example camera configuration:
 
 ```powershell
 .\.venv\Scripts\scoop-ai.exe credential-set `
-  --key scoop-ai/shop-01-counter-01/rtsp-url
+  --key scoop-ai/shop-01-counter-01/rtsp-url `
+  --database D:\ip-camera-ai-data\database\events.sqlite3
 ```
 
 Copy and customize the example configurations:

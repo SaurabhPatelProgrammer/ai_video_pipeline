@@ -9,12 +9,21 @@ import json
 import logging
 import sys
 import time
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 
 from .capture import LiveFrameSource, RecordedFrameSource
 from .config import ConfigurationError, load_camera_config
 from .security import resolve_credential, store_credential
+from .storage import (
+    AuditLogRecord,
+    BackupError,
+    ModelVersionRecord,
+    SQLiteEventRepository,
+    export_redacted_image,
+    utc_now_iso,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -35,6 +44,7 @@ def _parser() -> argparse.ArgumentParser:
         "credential-set", help="Provision a camera source in the OS credential store"
     )
     credential.add_argument("--key", required=True)
+    credential.add_argument("--database", type=Path, required=True, help="audit database")
     credential.set_defaults(handler=_credential_set)
 
     review = subparsers.add_parser("review", help="Open the local review application")
@@ -55,6 +65,72 @@ def _parser() -> argparse.ArgumentParser:
     consistency.add_argument("--database", type=Path, required=True)
     consistency.add_argument("--evidence-root", type=Path, required=True)
     consistency.set_defaults(handler=_consistency_check)
+
+    backup = subparsers.add_parser(
+        "database-backup", help="Create a WAL-safe SQLite backup"
+    )
+    backup.add_argument("--database", type=Path, required=True)
+    backup.add_argument("--output-dir", type=Path, required=True)
+    backup.add_argument("--retain-generations", type=int, default=5)
+    backup.set_defaults(handler=_database_backup)
+
+    restore = subparsers.add_parser(
+        "database-restore", help="Restore a verified backup to a new directory"
+    )
+    restore.add_argument("--backup", type=Path, required=True)
+    restore.add_argument("--output-dir", type=Path, required=True)
+    restore.add_argument("--database-name", default="events.sqlite3")
+    restore.add_argument("--actor", default="local-operator")
+    restore.set_defaults(handler=_database_restore)
+
+    retention = subparsers.add_parser("retention-update", help="Record a retention policy change")
+    retention.add_argument("--database", type=Path, required=True)
+    retention.add_argument("--actor", required=True)
+    retention.add_argument("--policy", required=True)
+    retention.set_defaults(handler=_retention_update)
+
+    deletion = subparsers.add_parser("evidence-delete", help="Manually delete one evidence artifact")
+    deletion.add_argument("--database", type=Path, required=True)
+    deletion.add_argument("--evidence-root", type=Path, required=True)
+    deletion.add_argument("--relative-path", required=True)
+    deletion.add_argument("--actor", required=True)
+    deletion.add_argument("--confirm", required=True, choices=["DELETE"])
+    deletion.set_defaults(handler=_evidence_delete)
+
+    evidence_export = subparsers.add_parser("evidence-export", help="Export blurred evidence imagery")
+    evidence_export.add_argument("--input", type=Path, required=True)
+    evidence_export.add_argument("--output", type=Path, required=True)
+    evidence_export.add_argument("--box", action="append", default=[], help="normalized x1,y1,x2,y2")
+    evidence_export.add_argument("--zone", action="append", default=[], help="normalized polygon JSON")
+    evidence_export.add_argument("--blur-kernel", type=int, default=51)
+    evidence_export.set_defaults(handler=_evidence_export)
+
+    pilot = subparsers.add_parser(
+        "generate-pilot-report", help="Generate a daily silent-pilot telemetry report"
+    )
+    pilot.add_argument("--database", type=Path, required=True)
+    pilot.add_argument("--camera-id")
+    pilot.add_argument("--output", type=Path)
+    pilot.set_defaults(handler=_generate_pilot_report)
+
+    outbox_retry = subparsers.add_parser(
+        "outbox-retry", help="Re-queue failed or dead-lettered reviewed exports"
+    )
+    outbox_retry.add_argument("--database", type=Path, required=True)
+    outbox_retry.add_argument("--event-id")
+    outbox_retry.set_defaults(handler=_outbox_retry)
+
+    readiness = subparsers.add_parser(
+        "production-readiness-check", help="Evaluate final production-gate evidence"
+    )
+    readiness.add_argument("--service-config", type=Path, required=True)
+    readiness.add_argument("--camera-config", type=Path, required=True)
+    readiness.add_argument("--database", type=Path, required=True)
+    readiness.add_argument("--dataset", type=Path)
+    readiness.add_argument("--backup", type=Path)
+    readiness.add_argument("--downstream-approved", action="store_true")
+    readiness.add_argument("--output", type=Path)
+    readiness.set_defaults(handler=_production_readiness)
 
     dataset = subparsers.add_parser("dataset", help="Validate or split versioned datasets")
     dataset_commands = dataset.add_subparsers(dest="dataset_command", required=True)
@@ -88,6 +164,7 @@ def _parser() -> argparse.ArgumentParser:
 
     calibrate = subparsers.add_parser(
         "zone-calibrate",
+        aliases=["recalibrate"],
         help="Draw container and customer polygons on a camera/video frame",
     )
     calibrate.add_argument("--source", required=True)
@@ -128,7 +205,40 @@ def _parser() -> argparse.ArgumentParser:
     manifest.add_argument("--model-version", required=True)
     manifest.add_argument("--resolution", type=int, default=576)
     manifest.add_argument("--confidence", type=float, default=0.35)
+    manifest.add_argument("--approved-by")
+    manifest.add_argument("--reviewer-signature")
     manifest.set_defaults(handler=_model_manifest)
+
+    register = subparsers.add_parser("model-register", help="Register an approved model manifest")
+    register.add_argument("--manifest", type=Path, required=True)
+    register.add_argument("--database", type=Path, required=True)
+    register.add_argument("--approved-reviewer", required=True)
+    register.set_defaults(handler=_model_register)
+
+    promote = subparsers.add_parser("model-promote", help="Promote an approved model for a camera")
+    promote.add_argument("--manifest", type=Path, required=True)
+    promote.add_argument("--database", type=Path, required=True)
+    promote.add_argument("--camera-id", required=True)
+    promote.add_argument("--approved-reviewer", required=True)
+    promote.set_defaults(handler=_model_promote)
+
+    rollback = subparsers.add_parser("model-rollback", help="Rollback a camera to its prior model")
+    rollback.add_argument("--database", type=Path, required=True)
+    rollback.add_argument("--camera-id", required=True)
+    rollback.add_argument("--approved-reviewer", required=True)
+    rollback.set_defaults(handler=_model_rollback)
+
+    replay = subparsers.add_parser(
+        "replay", help="Replay a recorded session and write a deterministic report"
+    )
+    replay.add_argument("--video", type=Path, required=True)
+    replay.add_argument("--service-config", type=Path, required=True)
+    replay.add_argument("--camera-config", type=Path, required=True)
+    replay.add_argument("--checkpoint-manifest", type=Path, required=True)
+    replay.add_argument("--output", type=Path, required=True)
+    replay.add_argument("--seed", type=int, default=42)
+    replay.add_argument("--max-frames", type=int)
+    replay.set_defaults(handler=_replay)
     return parser
 
 
@@ -213,6 +323,12 @@ def _credential_set(args: argparse.Namespace) -> int:
     if first != second:
         raise ConfigurationError("credential confirmation does not match")
     store_credential(args.key, first)
+    with SQLiteEventRepository(args.database) as repository:
+        repository.record_audit(AuditLogRecord(
+            audit_id=str(uuid.uuid4()), occurred_at=utc_now_iso(),
+            actor=getpass.getuser() or "local-operator", action="credential_change",
+            target=args.key, details={"operation": "set"},
+        ))
     print(f"Credential {args.key!r} stored in the OS credential backend.")
     return 0
 
@@ -282,6 +398,128 @@ def _consistency_check(args: argparse.Namespace) -> int:
     }
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if status == "ok" else 1
+
+
+def _database_backup(args: argparse.Namespace) -> int:
+    from .storage import create_backup
+
+    result = create_backup(
+        args.database,
+        args.output_dir,
+        retain_generations=args.retain_generations,
+    )
+    with SQLiteEventRepository(args.database) as repository:
+        repository.record_audit(AuditLogRecord(
+            audit_id=str(uuid.uuid4()), occurred_at=utc_now_iso(),
+            actor=getpass.getuser() or "local-operator", action="database_backup",
+            target=str(result.backup_path), details={"metadata": str(result.metadata_path)},
+        ))
+    print(
+        json.dumps(
+            {
+                "backup": str(result.backup_path),
+                "metadata": str(result.metadata_path),
+                "details": result.metadata,
+                "deleted_generations": list(result.deleted_generations),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _database_restore(args: argparse.Namespace) -> int:
+    from .storage import restore_backup
+
+    result = restore_backup(
+        args.backup,
+        args.output_dir,
+        database_name=args.database_name,
+    )
+    restored_database = Path(result["restored_database"] if isinstance(result, dict) and "restored_database" in result else args.output_dir / args.database_name)
+    with SQLiteEventRepository(restored_database) as repository:
+        repository.record_audit(AuditLogRecord(
+            audit_id=str(uuid.uuid4()), occurred_at=utc_now_iso(), actor=args.actor,
+            action="database_restore", target=str(args.backup), details={"output": str(restored_database)},
+        ))
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _retention_update(args: argparse.Namespace) -> int:
+    with SQLiteEventRepository(args.database) as repository:
+        repository.record_audit(AuditLogRecord(
+            audit_id=str(uuid.uuid4()), occurred_at=utc_now_iso(), actor=args.actor,
+            action="retention_rule_update", target="retention_policy", details={"policy": args.policy},
+        ))
+    return 0
+
+
+def _evidence_delete(args: argparse.Namespace) -> int:
+    root = args.evidence_root.resolve()
+    target = (root / args.relative_path).resolve()
+    if not target.is_relative_to(root) or not target.is_file() or target.is_symlink():
+        raise ValueError("evidence path is invalid or missing")
+    with SQLiteEventRepository(args.database) as repository:
+        records = [item for item in repository.list_all_evidence(include_deleted=False)
+                   if item.relative_path == target.relative_to(root).as_posix()]
+        if len(records) != 1:
+            raise ValueError("evidence path is not registered in the database")
+        target.unlink()
+        repository.mark_evidence_deleted(records[0].evidence_id, reason="manual_deletion")
+        repository.record_audit(AuditLogRecord(
+            audit_id=str(uuid.uuid4()), occurred_at=utc_now_iso(), actor=args.actor,
+            action="manual_evidence_deletion", target=records[0].relative_path,
+            details={"evidence_id": records[0].evidence_id},
+        ))
+    return 0
+
+
+def _evidence_export(args: argparse.Namespace) -> int:
+    boxes = []
+    for value in args.box:
+        parts = tuple(float(item.strip()) for item in value.split(","))
+        if len(parts) != 4:
+            raise ValueError("--box must be x1,y1,x2,y2")
+        boxes.append(parts)
+    zones = [tuple(tuple(float(coord) for coord in point) for point in json.loads(value)) for value in args.zone]
+    output = export_redacted_image(args.input, args.output, boxes=boxes, zones=zones, blur_kernel=args.blur_kernel)
+    print(json.dumps({"output": str(output), "redacted": True}, sort_keys=True))
+    return 0
+
+
+def _generate_pilot_report(args: argparse.Namespace) -> int:
+    from .operations import generate_pilot_report
+
+    report = generate_pilot_report(
+        args.database, camera_id=args.camera_id, output_path=args.output
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _outbox_retry(args: argparse.Namespace) -> int:
+    with SQLiteEventRepository(args.database) as repository:
+        retried = repository.retry_outbox(event_id=args.event_id)
+    print(json.dumps({"requeued": retried, "event_id": args.event_id}, sort_keys=True))
+    return 0
+
+
+def _production_readiness(args: argparse.Namespace) -> int:
+    from .operations import generate_readiness_report
+
+    report = generate_readiness_report(
+        service_config_path=args.service_config,
+        camera_config_path=args.camera_config,
+        database_path=args.database,
+        dataset_path=args.dataset,
+        backup_path=args.backup,
+        downstream_approved=args.downstream_approved,
+        output_path=args.output,
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["ready"] else 1
 
 
 def _dataset_validate(args: argparse.Namespace) -> int:
@@ -407,8 +645,78 @@ def _model_manifest(args: argparse.Namespace) -> int:
         model_version=args.model_version,
         input_resolution=args.resolution,
         confidence_threshold=args.confidence,
+        approved_by=args.approved_by,
+        reviewer_signature=args.reviewer_signature,
     )
     print(json.dumps(asdict(manifest), indent=2, sort_keys=True))
+    return 0
+
+
+def _model_register(args: argparse.Namespace) -> int:
+    from .inference import verify_manifest_approval
+
+    manifest = verify_manifest_approval(args.manifest, approved_reviewers=[args.approved_reviewer])
+    with SQLiteEventRepository(args.database) as repository:
+        inserted = repository.register_model(ModelVersionRecord(
+            model_version=manifest.model_version,
+            model_name=f"rfdetr-{manifest.architecture}",
+            checkpoint_sha256=manifest.checkpoint_sha256,
+            created_at=utc_now_iso(),
+            approved_at=utc_now_iso(),
+            metadata={
+                "manifest": str(args.manifest.resolve()),
+                "approved_by": manifest.approved_by,
+                "reviewer_signature": manifest.reviewer_signature,
+                "dataset_version": manifest.dataset_version,
+                "classes": list(manifest.classes),
+                "input_resolution": manifest.input_resolution,
+            },
+        ))
+    print(json.dumps({"model_version": manifest.model_version, "registered": inserted}, sort_keys=True))
+    return 0
+
+
+def _model_promote(args: argparse.Namespace) -> int:
+    from .inference import verify_manifest_approval
+
+    manifest = verify_manifest_approval(args.manifest, approved_reviewers=[args.approved_reviewer])
+    with SQLiteEventRepository(args.database) as repository:
+        repository.promote_model(
+            camera_id=args.camera_id,
+            model_version=manifest.model_version,
+            manifest_sha256=manifest.checkpoint_sha256,
+            approved_by=manifest.approved_by or args.approved_reviewer,
+            changed_at=utc_now_iso(),
+        )
+        active = repository.active_model(args.camera_id)
+    print(json.dumps(active, sort_keys=True))
+    return 0
+
+
+def _model_rollback(args: argparse.Namespace) -> int:
+    with SQLiteEventRepository(args.database) as repository:
+        active = repository.rollback_model(
+            camera_id=args.camera_id,
+            approved_by=args.approved_reviewer,
+            changed_at=utc_now_iso(),
+        )
+    print(json.dumps(active, sort_keys=True))
+    return 0
+
+
+def _replay(args: argparse.Namespace) -> int:
+    from .training import run_replay
+
+    report = run_replay(
+        args.video,
+        args.service_config,
+        args.camera_config,
+        args.checkpoint_manifest,
+        output_path=args.output,
+        seed=args.seed,
+        max_frames=args.max_frames,
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
 
@@ -417,7 +725,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
         return int(args.handler(args))
-    except (ConfigurationError, ValueError, RuntimeError) as exc:
+    except (BackupError, ConfigurationError, ValueError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

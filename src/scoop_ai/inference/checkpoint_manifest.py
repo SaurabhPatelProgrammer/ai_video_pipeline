@@ -32,6 +32,8 @@ class CheckpointManifest:
     input_resolution: int
     confidence_threshold: float
     model_version: str
+    approved_by: str | None = None
+    reviewer_signature: str | None = None
 
     @property
     def canonical_classes(self) -> tuple[str, ...]:
@@ -47,6 +49,8 @@ def create_checkpoint_manifest(
     model_version: str,
     input_resolution: int = 576,
     confidence_threshold: float = 0.35,
+    approved_by: str | None = None,
+    reviewer_signature: str | None = None,
 ) -> CheckpointManifest:
     """Create and immediately verify a manifest beside a trusted checkpoint."""
 
@@ -70,6 +74,8 @@ def create_checkpoint_manifest(
         "input_resolution": input_resolution,
         "confidence_threshold": confidence_threshold,
         "model_version": model_version,
+        "approved_by": approved_by,
+        "reviewer_signature": reviewer_signature,
     }
     temporary = output.with_suffix(output.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -180,4 +186,6 @@ def load_checkpoint_manifest(
         input_resolution=input_resolution,
         confidence_threshold=confidence_threshold,
         model_version=model_version,
+        approved_by=(str(data["approved_by"]).strip() if data.get("approved_by") else None),
+        reviewer_signature=(str(data["reviewer_signature"]).strip() if data.get("reviewer_signature") else None),
     )

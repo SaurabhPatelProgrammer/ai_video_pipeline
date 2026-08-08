@@ -39,5 +39,8 @@ jobs:
       - name: Compile source
         run: python -m compileall -q src tests
 
+      - name: Lint for correctness defects
+        run: python -m ruff check src tests scripts
+
       - name: Run tests
         run: python -m pytest -q

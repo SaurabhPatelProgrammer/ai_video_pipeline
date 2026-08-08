@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+import getpass
 import os
+import shutil
+import tempfile
 import threading
 from pathlib import Path
+
+from .config import load_camera_config, load_service_config
+from .security import resolve_credential
 
 try:
     import servicemanager
@@ -43,6 +49,59 @@ def _load_settings() -> dict[str, str]:
     return output
 
 
+def _probe_write(directory: Path) -> None:
+    """Verify effective service-account write access without leaving a file."""
+
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=".scoop-ai-startup-", suffix=".tmp", dir=directory, delete=True
+        ) as handle:
+            handle.write(b"startup-permission-check")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        raise RuntimeError(f"service account cannot write to {directory}: {exc}") from exc
+
+
+def validate_startup(settings: dict[str, str]) -> dict[str, object]:
+    """Validate config, credentials, storage permissions and free disk space."""
+
+    service_config = load_service_config(settings["service_config"])
+    camera_config = load_camera_config(settings["camera_config"])
+    artifact_root = service_config.artifact_root.resolve()
+    database_dir = artifact_root / "database"
+    evidence_dir = artifact_root / "evidence"
+    _probe_write(database_dir)
+    _probe_write(evidence_dir)
+
+    minimum_bytes = int(service_config.minimum_free_space_gb * 1024**3)
+    free_bytes = shutil.disk_usage(artifact_root).free
+    if free_bytes < minimum_bytes:
+        raise RuntimeError(
+            f"insufficient free disk space on {artifact_root}: "
+            f"{free_bytes / 1024**3:.2f} GiB available, "
+            f"{service_config.minimum_free_space_gb:.2f} GiB required"
+        )
+
+    try:
+        # This deliberately resolves through the OS credential backend; no
+        # secret value is returned or logged.
+        camera_config.resolve_source(credential_resolver=resolve_credential)
+    except Exception as exc:
+        raise RuntimeError(
+            f"camera source or credential validation failed for {camera_config.camera_id}"
+        ) from exc
+
+    return {
+        "service_account": getpass.getuser() or "unknown",
+        "artifact_root": str(artifact_root),
+        "free_space_bytes": free_bytes,
+        "minimum_free_space_bytes": minimum_bytes,
+        "camera_id": camera_config.camera_id,
+    }
+
+
 if win32serviceutil is not None:
     class ScoopAIWindowsService(win32serviceutil.ServiceFramework):
         """Importable service class required by the Windows SCM."""
@@ -65,6 +124,10 @@ if win32serviceutil is not None:
             from .application.service import run_service
 
             settings = _load_settings()
+            validation = validate_startup(settings)
+            servicemanager.LogInfoMsg(
+                f"Scoop AI startup validation passed for {validation['service_account']}"
+            )
             servicemanager.LogInfoMsg("Scoop AI Edge service starting")
             result = run_service(
                 service_config_path=settings["service_config"],

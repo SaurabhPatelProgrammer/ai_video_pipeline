@@ -6,6 +6,24 @@ log_level = "INFO"
 health_host = "127.0.0.1"
 health_port = 8080
 shutdown_timeout_seconds = 10.0
+minimum_free_space_gb = 10.0
+approved_reviewers = ["platform-reviewer"]
+billing_mode = "disabled"
+automatic_exports = false
+
+[export]
+enabled = false
+poll_seconds = 2.0
+max_attempts = 5
+backoff_seconds = 2.0
+
+[alerts]
+poll_seconds = 5.0
+stale_after_seconds = 10.0
+reconnect_warning = 3
+reconnect_critical = 10
+low_disk_warning_gb = 10.0
+low_disk_critical_gb = 2.0
 
 [capture]
 reconnect_seconds = 3.0

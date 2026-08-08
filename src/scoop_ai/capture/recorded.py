@@ -98,6 +98,7 @@ class RecordedFrameSource:
             frame_received=True,
             at_utc=observed_at,
             at_monotonic=packet.observed_monotonic_seconds,
+            sequence=packet.sequence,
         )
         return packet
 

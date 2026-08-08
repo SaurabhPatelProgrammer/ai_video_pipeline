@@ -102,6 +102,8 @@ class CaptureHealth:
     updated_at_utc: datetime
     last_frame_at_utc: datetime | None = None
     last_frame_monotonic_seconds: float | None = None
+    last_sequence: int | None = None
+    frames_per_second: float = 0.0
 
     @property
     def heartbeat_at_utc(self) -> datetime:

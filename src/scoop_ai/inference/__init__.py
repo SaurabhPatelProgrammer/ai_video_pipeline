@@ -15,6 +15,12 @@ from .interfaces import (
 )
 from .rfdetr_adapter import RFDETRLocalAdapter
 from .supervision_tracker import SupervisionByteTrackAdapter
+from .governance import (
+    approval_payload,
+    expected_reviewer_signature,
+    validate_model_camera_compatibility,
+    verify_manifest_approval,
+)
 
 __all__ = [
     "CANONICAL_CLASSES",
@@ -28,4 +34,8 @@ __all__ = [
     "TrackerAdapter",
     "load_checkpoint_manifest",
     "observations_from_detections",
+    "approval_payload",
+    "expected_reviewer_signature",
+    "validate_model_camera_compatibility",
+    "verify_manifest_approval",
 ]

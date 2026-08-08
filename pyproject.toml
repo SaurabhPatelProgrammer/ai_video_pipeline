@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3,<9",
+    "ruff>=0.13,<0.17",
 ]
 
 [project.scripts]
@@ -36,3 +37,14 @@ include = ["scoop_ai*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = [".venv", "artifacts", "datasets", "models"]
+
+[tool.ruff.lint]
+# Correctness only. F catches undefined names, unused imports, and unreachable
+# assignments; E9 catches syntax and IO errors. Style rules are deliberately
+# excluded so the gate never produces noise that trains reviewers to ignore it.
+select = ["F", "E9"]

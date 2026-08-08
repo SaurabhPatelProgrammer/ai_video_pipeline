@@ -36,5 +36,13 @@ New-Item -ItemType Directory -Path $SettingsDirectory -Force | Out-Null
 
 & $PythonExe -m scoop_ai.windows_service --startup auto install
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# Restart only after an actual crash, with bounded delays so a bad deployment
+# cannot thrash the host. The one-day reset window limits repeated restarts.
+& sc.exe failure ScoopAIEdge actions= restart/60000/restart/120000/restart/300000 reset= 86400
+if ($LASTEXITCODE -ne 0) { throw "Could not configure SCM crash recovery actions." }
+& sc.exe failureflag ScoopAIEdge 1
+if ($LASTEXITCODE -ne 0) { throw "Could not enable SCM failure actions." }
+
 & $PythonExe -m scoop_ai.windows_service start
 exit $LASTEXITCODE

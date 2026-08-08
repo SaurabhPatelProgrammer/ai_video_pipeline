@@ -15,6 +15,7 @@ from typing import Iterable, Sequence
 import cv2
 import numpy as np
 
+from .fingerprint import create_reference_fingerprint
 from ..security import safe_source_name
 
 NormalizedPoint = tuple[float, float]
@@ -125,6 +126,7 @@ def save_calibrated_profile(
     frame_width: int,
     frame_height: int,
     source_name: str,
+    reference_frame: np.ndarray | None = None,
     overwrite: bool = False,
 ) -> CalibrationResult:
     """Write a calibrated derivative while preserving learned thresholds."""
@@ -166,6 +168,10 @@ def save_calibrated_profile(
             },
         }
     )
+    if reference_frame is not None:
+        calibration = payload["calibration"]
+        assert isinstance(calibration, dict)
+        calibration["reference_fingerprint"] = create_reference_fingerprint(reference_frame)
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
@@ -360,6 +366,7 @@ def run_zone_calibrator(
                         frame_width=frame.shape[1],
                         frame_height=frame.shape[0],
                         source_name=safe_source_name(parsed_source),
+                        reference_frame=frame,
                         overwrite=overwrite,
                     )
                 except ValueError as exc:

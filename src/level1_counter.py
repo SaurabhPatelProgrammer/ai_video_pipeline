@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 from dotenv import load_dotenv
 
-from level1_motion_model import MotionCandidate, MotionScoopStateMachine
+from level1_motion_model import MotionScoopStateMachine
 from order_serving_model import ServedOrderStateMachine
 from video_source import parse_source, safe_source_name
 

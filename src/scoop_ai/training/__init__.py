@@ -16,6 +16,7 @@ from .motion_baseline import (
     train_motion_baseline_from_videos,
 )
 from .order_profile import ServedOrderProfileResult, create_served_order_profile
+from .replay import run_replay
 
 __all__ = [
     "DatasetValidationError",
@@ -32,5 +33,6 @@ __all__ = [
     "ServedOrderProfileResult",
     "create_served_order_profile",
     "evaluate_events",
+    "run_replay",
     "validate_dataset",
 ]

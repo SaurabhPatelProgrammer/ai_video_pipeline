@@ -28,10 +28,16 @@ class HealthTracker:
         reconnect: bool = False,
         at_utc: datetime | None = None,
         at_monotonic: float | None = None,
+        sequence: int | None = None,
     ) -> CaptureHealth:
         now = at_utc or datetime.now(timezone.utc)
         with self._lock:
             current = self._health
+            frame_rate = current.frames_per_second
+            if frame_received and current.last_frame_monotonic_seconds is not None and at_monotonic is not None:
+                elapsed = at_monotonic - current.last_frame_monotonic_seconds
+                if elapsed > 0:
+                    frame_rate = 1.0 / elapsed
             self._health = replace(
                 current,
                 state=state,
@@ -50,5 +56,7 @@ class HealthTracker:
                     if frame_received
                     else current.last_frame_monotonic_seconds
                 ),
+                last_sequence=sequence if frame_received else current.last_sequence,
+                frames_per_second=frame_rate,
             )
             return self._health

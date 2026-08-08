@@ -131,6 +131,10 @@ class QualityConfig:
     pixel_change_threshold: int = 35
     maximum_changed_fraction: float = 0.65
     analysis_width: int = 320
+    reference_drift_threshold: float = 0.20
+    zone_change_threshold: float = 0.45
+    obstruction_seconds: float = 1.0
+    minimum_fps_ratio: float = 0.50
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, object]) -> "QualityConfig":
@@ -141,6 +145,10 @@ class QualityConfig:
                 "pixel_change_threshold",
                 "maximum_changed_fraction",
                 "analysis_width",
+                "reference_drift_threshold",
+                "zone_change_threshold",
+                "obstruction_seconds",
+                "minimum_fps_ratio",
             },
             "quality",
         )
@@ -150,6 +158,11 @@ class QualityConfig:
         )
         if changed > 1:
             raise ConfigurationError("quality.maximum_changed_fraction cannot exceed 1")
+        drift = _positive_number(data.get("reference_drift_threshold", 0.20), "quality.reference_drift_threshold")
+        zone_change = _positive_number(data.get("zone_change_threshold", 0.45), "quality.zone_change_threshold")
+        fps_ratio = _positive_number(data.get("minimum_fps_ratio", 0.50), "quality.minimum_fps_ratio")
+        if drift > 1 or zone_change > 1 or fps_ratio > 1:
+            raise ConfigurationError("quality drift, obstruction and FPS ratios cannot exceed 1")
         return cls(
             minimum_blur_variance=_positive_number(
                 data.get("minimum_blur_variance", 20.0),
@@ -169,6 +182,14 @@ class QualityConfig:
                 minimum=32,
                 maximum=4096,
             ),
+            reference_drift_threshold=drift,
+            zone_change_threshold=zone_change,
+            obstruction_seconds=_positive_number(
+                data.get("obstruction_seconds", 1.0),
+                "quality.obstruction_seconds",
+                allow_zero=True,
+            ),
+            minimum_fps_ratio=fps_ratio,
         )
 
 
@@ -215,7 +236,87 @@ class ServiceConfig:
     health_host: str
     health_port: int
     shutdown_timeout_seconds: float
+    minimum_free_space_gb: float = 10.0
+    approved_reviewers: tuple[str, ...] = ()
+    billing_mode: str = "disabled"
+    automatic_exports: bool = False
+    export: "ExportConfig" = field(default_factory=lambda: ExportConfig())
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    alerts: "AlertConfig" = field(default_factory=lambda: AlertConfig())
+
+
+@dataclass(frozen=True, slots=True)
+class AlertConfig:
+    poll_seconds: float = 5.0
+    stale_after_seconds: float = 10.0
+    reconnect_warning: int = 3
+    reconnect_critical: int = 10
+    low_disk_warning_gb: float = 10.0
+    low_disk_critical_gb: float = 2.0
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, object]) -> "AlertConfig":
+        _unknown_keys(
+            data,
+            {
+                "poll_seconds",
+                "stale_after_seconds",
+                "reconnect_warning",
+                "reconnect_critical",
+                "low_disk_warning_gb",
+                "low_disk_critical_gb",
+            },
+            "alerts",
+        )
+        warning = _integer(data.get("reconnect_warning", 3), "alerts.reconnect_warning", minimum=1, maximum=1_000_000)
+        critical = _integer(data.get("reconnect_critical", 10), "alerts.reconnect_critical", minimum=warning, maximum=1_000_000)
+        warning_disk = _positive_number(data.get("low_disk_warning_gb", 10.0), "alerts.low_disk_warning_gb", allow_zero=True)
+        critical_disk = _positive_number(data.get("low_disk_critical_gb", 2.0), "alerts.low_disk_critical_gb", allow_zero=True)
+        if critical_disk > warning_disk:
+            raise ConfigurationError("alerts.low_disk_critical_gb cannot exceed warning threshold")
+        return cls(
+            poll_seconds=_positive_number(data.get("poll_seconds", 5.0), "alerts.poll_seconds"),
+            stale_after_seconds=_positive_number(data.get("stale_after_seconds", 10.0), "alerts.stale_after_seconds"),
+            reconnect_warning=warning,
+            reconnect_critical=critical,
+            low_disk_warning_gb=warning_disk,
+            low_disk_critical_gb=critical_disk,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExportConfig:
+    enabled: bool = False
+    endpoint: str | None = None
+    poll_seconds: float = 2.0
+    max_attempts: int = 5
+    backoff_seconds: float = 2.0
+    signing_key_credential: str | None = None
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, object]) -> "ExportConfig":
+        _unknown_keys(data, {
+            "enabled", "endpoint", "poll_seconds", "max_attempts",
+            "backoff_seconds", "signing_key_credential",
+        }, "export")
+        enabled = data.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigurationError("export.enabled must be true or false")
+        endpoint = data.get("endpoint")
+        if enabled and (not isinstance(endpoint, str) or not endpoint.strip()):
+            raise ConfigurationError("enabled export requires export.endpoint")
+        credential = data.get("signing_key_credential")
+        if enabled and (not isinstance(credential, str) or not credential.strip()):
+            raise ConfigurationError("enabled export requires export.signing_key_credential")
+        attempts = _integer(data.get("max_attempts", 5), "export.max_attempts", minimum=1, maximum=100)
+        return cls(
+            enabled=enabled,
+            endpoint=str(endpoint).strip() if endpoint else None,
+            poll_seconds=_positive_number(data.get("poll_seconds", 2.0), "export.poll_seconds"),
+            max_attempts=attempts,
+            backoff_seconds=_positive_number(data.get("backoff_seconds", 2.0), "export.backoff_seconds"),
+            signing_key_credential=str(credential).strip() if credential else None,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +328,9 @@ class CameraConfig:
     source_env: str | None
     credential_key: str | None
     analysis_fps: float
+    calibration_profile: Path | None = None
+    expected_width: int | None = None
+    expected_height: int | None = None
     tub_zone: tuple[tuple[float, float], ...] | None = None
     serving_zone: tuple[tuple[float, float], ...] | None = None
     capture: CaptureConfig = field(default_factory=CaptureConfig)
@@ -289,7 +393,7 @@ def _normalized_polygon(value: object, name: str) -> tuple[tuple[float, float], 
 
 def load_service_config(path: str | Path) -> ServiceConfig:
     data = _read_toml(path)
-    _unknown_keys(data, {"service", "capture"}, "document")
+    _unknown_keys(data, {"service", "capture", "alerts", "export"}, "document")
     service = _required_table(data, "service")
     _unknown_keys(
         service,
@@ -301,6 +405,10 @@ def load_service_config(path: str | Path) -> ServiceConfig:
             "health_host",
             "health_port",
             "shutdown_timeout_seconds",
+            "minimum_free_space_gb",
+            "approved_reviewers",
+            "billing_mode",
+            "automatic_exports",
         },
         "service",
     )
@@ -310,6 +418,12 @@ def load_service_config(path: str | Path) -> ServiceConfig:
     environment = str(service.get("environment", "production")).strip().lower()
     if environment not in {"development", "test", "production"}:
         raise ConfigurationError("service.environment must be development, test, or production")
+    billing_mode = str(service.get("billing_mode", "disabled")).strip().lower()
+    if billing_mode != "disabled":
+        raise ConfigurationError("service.billing_mode must be 'disabled' during the silent pilot")
+    automatic_exports = service.get("automatic_exports", False)
+    if not isinstance(automatic_exports, bool) or automatic_exports:
+        raise ConfigurationError("service.automatic_exports must be false during the silent pilot")
     log_level = str(service.get("log_level", "INFO")).upper()
     if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
         raise ConfigurationError("service.log_level is invalid")
@@ -319,6 +433,12 @@ def load_service_config(path: str | Path) -> ServiceConfig:
     capture_data = data.get("capture", {})
     if not isinstance(capture_data, dict):
         raise ConfigurationError("[capture] must be a table")
+    alerts_data = data.get("alerts", {})
+    if not isinstance(alerts_data, dict):
+        raise ConfigurationError("[alerts] must be a table")
+    export_data = data.get("export", {})
+    if not isinstance(export_data, dict):
+        raise ConfigurationError("[export] must be a table")
     return ServiceConfig(
         name=name,
         environment=environment,
@@ -335,7 +455,20 @@ def load_service_config(path: str | Path) -> ServiceConfig:
             service.get("shutdown_timeout_seconds", 10.0),
             "service.shutdown_timeout_seconds",
         ),
+        minimum_free_space_gb=_positive_number(
+            service.get("minimum_free_space_gb", 10.0),
+            "service.minimum_free_space_gb",
+            allow_zero=True,
+        ),
+        approved_reviewers=tuple(
+            str(item).strip() for item in service.get("approved_reviewers", [])
+            if str(item).strip()
+        ),
+        billing_mode=billing_mode,
+        automatic_exports=automatic_exports,
+        export=ExportConfig.from_mapping(export_data),
         capture=CaptureConfig.from_mapping(capture_data),
+        alerts=AlertConfig.from_mapping(alerts_data),
     )
 
 
@@ -353,6 +486,9 @@ def load_camera_config(path: str | Path) -> CameraConfig:
             "source_env",
             "credential_key",
             "analysis_fps",
+            "calibration_profile",
+            "expected_width",
+            "expected_height",
         },
         "camera",
     )
@@ -385,6 +521,15 @@ def load_camera_config(path: str | Path) -> CameraConfig:
     if source_env is not None:
         if not isinstance(source_env, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]*", source_env):
             raise ConfigurationError("camera.source_env must be an uppercase environment variable name")
+    calibration_profile = camera.get("calibration_profile")
+    if calibration_profile is not None and (not isinstance(calibration_profile, str) or not calibration_profile.strip()):
+        raise ConfigurationError("camera.calibration_profile must be a non-empty path")
+    expected_width = camera.get("expected_width")
+    expected_height = camera.get("expected_height")
+    if expected_width is not None:
+        expected_width = _integer(expected_width, "camera.expected_width", minimum=1, maximum=16_384)
+    if expected_height is not None:
+        expected_height = _integer(expected_height, "camera.expected_height", minimum=1, maximum=16_384)
     if credential_key is not None:
         if not isinstance(credential_key, str) or not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9._:/-]{2,127}", credential_key
@@ -424,6 +569,9 @@ def load_camera_config(path: str | Path) -> CameraConfig:
             camera.get("analysis_fps", 10.0),
             "camera.analysis_fps",
         ),
+        calibration_profile=Path(calibration_profile) if calibration_profile is not None else None,
+        expected_width=expected_width,
+        expected_height=expected_height,
         tub_zone=tub_zone,
         serving_zone=serving_zone,
         capture=CaptureConfig.from_mapping(capture_data),

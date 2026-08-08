@@ -9,10 +9,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from scoop_ai.calibration import save_calibrated_profile, validate_zone  # noqa: E402
+from scoop_ai.calibration import (  # noqa: E402
+    SceneQualityGuard,
+    load_reference_fingerprint,
+    save_calibrated_profile,
+    validate_zone,
+)
 
 
 class ZoneValidationTests(unittest.TestCase):
@@ -86,6 +93,44 @@ class ZoneValidationTests(unittest.TestCase):
                     frame_height=100,
                     source_name="sample.mp4",
                 )
+
+    def test_reference_fingerprint_detects_static_scene_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base.json"
+            base.write_text(
+                '{"tub_motion_threshold": 0.1, "serving_motion_threshold": 0.1}',
+                encoding="utf-8",
+            )
+            frame = np.zeros((100, 120, 3), dtype=np.uint8)
+            frame[:, :60] = 80
+            frame[:, 60:] = 180
+            output = root / "calibrated.json"
+            save_calibrated_profile(
+                base,
+                output,
+                container_zone=[(0.05, 0.55), (0.45, 0.55), (0.45, 0.95), (0.05, 0.95)],
+                customer_zone=[(0.55, 0.05), (0.95, 0.05), (0.95, 0.45), (0.55, 0.45)],
+                frame_width=120,
+                frame_height=100,
+                source_name="camera",
+                reference_frame=frame,
+            )
+            fingerprint = load_reference_fingerprint(output)
+            guard = SceneQualityGuard(
+                fingerprint,
+                tub_zone=[(0.05, 0.55), (0.45, 0.55), (0.45, 0.95), (0.05, 0.95)],
+                serving_zone=[(0.55, 0.05), (0.95, 0.05), (0.95, 0.45), (0.55, 0.45)],
+                drift_threshold=0.05,
+                zone_change_threshold=0.2,
+                obstruction_seconds=0.0,
+                pixel_change_threshold=10,
+            )
+            self.assertTrue(guard.assess(frame, timestamp_seconds=1.0).acceptable)
+            moved = np.full_like(frame, 255)
+            result = guard.assess(moved, timestamp_seconds=2.0)
+            self.assertFalse(result.acceptable)
+            self.assertIn("calibration_drift", result.reasons)
 
 
 if __name__ == "__main__":
