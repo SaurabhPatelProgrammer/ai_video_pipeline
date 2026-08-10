@@ -1,0 +1,16 @@
+{
+  "approved_by": null,
+  "architecture": "nano",
+  "checkpoint_file": "checkpoint_best_total.pth",
+  "checkpoint_sha256": "69ec1ef0a2417e8957e5c633a1ed3a0406f90cd82e1883650f104faa591069e5",
+  "classes": [
+    "ice_cream_item"
+  ],
+  "confidence_threshold": 0.1,
+  "dataset_version": "0240f2a572881be75e35799b921cb1f8e2ab78693b3aa2ecb845f7a9250fc54d",
+  "input_resolution": 512,
+  "model_family": "rfdetr",
+  "model_version": "scoop-rfdetr-nano-20260810-122317",
+  "reviewer_signature": null,
+  "schema_version": 1
+}

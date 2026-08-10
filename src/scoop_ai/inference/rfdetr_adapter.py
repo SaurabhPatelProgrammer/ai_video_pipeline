@@ -26,6 +26,7 @@ class RFDETRLocalAdapter:
         manifest_path: Path,
         *,
         device: str | None = None,
+        confidence_threshold: float | None = None,
         expected_architecture: str | None = None,
         expected_classes: tuple[str, ...] | None = CANONICAL_CLASSES,
     ) -> None:
@@ -36,7 +37,14 @@ class RFDETRLocalAdapter:
             expected_classes=expected_classes,
             verify_checkpoint=True,
         )
+        if confidence_threshold is not None and not 0 <= confidence_threshold <= 1:
+            raise ValueError("confidence_threshold must be between 0 and 1")
         self.device = device
+        self.confidence_threshold = (
+            self.manifest.confidence_threshold
+            if confidence_threshold is None
+            else confidence_threshold
+        )
         self._model: Any | None = None
 
     @property
@@ -72,7 +80,7 @@ class RFDETRLocalAdapter:
         model = self._load_model()
         result = model.predict(
             frame,
-            threshold=self.manifest.confidence_threshold,
+            threshold=self.confidence_threshold,
             include_source_image=False,
         )
         xyxy = getattr(result, "xyxy", ())

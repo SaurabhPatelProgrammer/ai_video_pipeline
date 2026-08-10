@@ -202,6 +202,36 @@ def _validate_image_record(
     return image_path, normalized_session, timestamp, normalized_sha
 
 
+def _validate_source_segment(
+    image_id: int,
+    record: dict[str, Any],
+    *,
+    split: str,
+    timestamp: float | None,
+    issues: list[str],
+) -> tuple[float, float] | None:
+    start_value = record.get("source_segment_start_seconds")
+    end_value = record.get("source_segment_end_seconds")
+    if start_value is None and end_value is None:
+        return None
+    if start_value is None or end_value is None:
+        issues.append(f"{split}: image {image_id} source segment requires both start and end")
+        return None
+    try:
+        start = float(start_value)
+        end = float(end_value)
+    except (TypeError, ValueError):
+        issues.append(f"{split}: image {image_id} source segment bounds must be numeric")
+        return None
+    if not isfinite(start) or not isfinite(end) or start < 0 or end < start:
+        issues.append(f"{split}: image {image_id} source segment bounds are invalid")
+        return None
+    if timestamp is not None and not (start <= timestamp <= end):
+        issues.append(f"{split}: image {image_id} timestamp falls outside its source segment")
+        return None
+    return start, end
+
+
 def _valid_bbox(
     annotation: dict[str, Any], image: dict[str, Any]
 ) -> tuple[bool, str | None]:
@@ -251,7 +281,9 @@ def validate_dataset(
     summaries: dict[str, SplitSummary] = {}
     session_owner: dict[str, str] = {}
     session_source_hash: dict[str, str] = {}
-    source_hash_owner: dict[str, tuple[str, str]] = {}
+    source_hash_sessions: dict[
+        str, dict[str, tuple[str, tuple[float, float] | None]]
+    ] = {}
     content_owner: dict[str, tuple[str, str]] = {}
     fingerprint = hashlib.sha256()
 
@@ -284,12 +316,19 @@ def validate_dataset(
                 if normalized_name in file_names:
                     issues.append(f"{split}: duplicate image file_name {file_name!r}")
                 file_names.add(normalized_name)
-            image_path, session, _timestamp, source_sha = _validate_image_record(
+            image_path, session, timestamp, source_sha = _validate_image_record(
                 image_id,
                 image,
                 split=split,
                 split_directory=split_directory,
                 options=config,
+                issues=issues,
+            )
+            segment = _validate_source_segment(
+                image_id,
+                image,
+                split=split,
+                timestamp=timestamp,
                 issues=issues,
             )
             if session is not None:
@@ -305,14 +344,11 @@ def validate_dataset(
                         issues.append(
                             f"source session {session!r} has inconsistent source_sha256 values"
                         )
-                    previous_source = source_hash_owner.setdefault(
-                        source_sha, (session, split)
-                    )
-                    if previous_source[0] != session:
+                    source_sessions = source_hash_sessions.setdefault(source_sha, {})
+                    previous_source = source_sessions.setdefault(session, (split, segment))
+                    if previous_source != (split, segment):
                         issues.append(
-                            f"source_sha256 is assigned to multiple sessions: "
-                            f"{previous_source[0]!r} ({previous_source[1]}) and "
-                            f"{session!r} ({split})"
+                            f"source session {session!r} has inconsistent segment metadata"
                         )
             if config.hash_images and image_path is not None and image_path.is_file():
                 content_hash = _file_sha256(image_path)
@@ -366,6 +402,28 @@ def validate_dataset(
             class_counts=dict(sorted(class_counts.items())),
             sessions=tuple(sorted(sessions)),
         )
+
+    for source_sha, sessions in source_hash_sessions.items():
+        if len(sessions) < 2:
+            continue
+        if any(details[1] is None for details in sessions.values()):
+            names = ", ".join(sorted(repr(name) for name in sessions))
+            issues.append(
+                "source_sha256 is assigned to multiple sessions without auditable "
+                f"non-overlapping source segments: {source_sha[:12]}... ({names})"
+            )
+            continue
+        ordered_segments = sorted(
+            (details[1][0], details[1][1], session, details[0])
+            for session, details in sessions.items()
+            if details[1] is not None
+        )
+        for previous, current in zip(ordered_segments, ordered_segments[1:]):
+            if current[0] <= previous[1]:
+                issues.append(
+                    "source segments overlap across sessions: "
+                    f"{previous[2]!r} ({previous[3]}) and {current[2]!r} ({current[3]})"
+                )
 
     if issues:
         raise DatasetValidationError(issues)

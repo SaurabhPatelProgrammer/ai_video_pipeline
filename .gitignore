@@ -71,6 +71,14 @@ checkpoints/
 *.engine
 *.safetensors
 
+# Release inference bundle (Git LFS); keep every training/intermediate weight ignored.
+!models/
+models/*
+!models/ice-cream-item-rfdetr-nano-v2/
+models/ice-cream-item-rfdetr-nano-v2/*
+!models/ice-cream-item-rfdetr-nano-v2/checkpoint_best_total.pth
+!models/ice-cream-item-rfdetr-nano-v2/model-manifest.json
+
 # Local service and camera configuration; commit examples only
 configs/service.toml
 configs/level1_shop_camera.user.json

@@ -110,6 +110,53 @@ class DatasetValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(DatasetValidationError, "leaks across"):
             validate_dataset(self.root)
 
+    def test_same_source_requires_auditable_non_overlapping_segments(self) -> None:
+        train_path = self.root / "train" / "_annotations.coco.json"
+        valid_path = self.root / "valid" / "_annotations.coco.json"
+        train = json.loads(train_path.read_text(encoding="utf-8"))
+        valid = json.loads(valid_path.read_text(encoding="utf-8"))
+        valid["images"][0]["source_sha256"] = train["images"][0]["source_sha256"]
+        train_path.write_text(json.dumps(train), encoding="utf-8")
+        valid_path.write_text(json.dumps(valid), encoding="utf-8")
+
+        with self.assertRaisesRegex(DatasetValidationError, "without auditable"):
+            validate_dataset(self.root)
+
+        train["images"][0].update(
+            source_segment_start_seconds=0.0,
+            source_segment_end_seconds=2.0,
+        )
+        valid["images"][0].update(
+            timestamp_seconds=3.5,
+            source_segment_start_seconds=3.0,
+            source_segment_end_seconds=4.0,
+        )
+        train_path.write_text(json.dumps(train), encoding="utf-8")
+        valid_path.write_text(json.dumps(valid), encoding="utf-8")
+
+        report = validate_dataset(self.root)
+        self.assertEqual(report.splits["valid"].images, 1)
+
+    def test_overlapping_source_segments_are_rejected(self) -> None:
+        train_path = self.root / "train" / "_annotations.coco.json"
+        valid_path = self.root / "valid" / "_annotations.coco.json"
+        train = json.loads(train_path.read_text(encoding="utf-8"))
+        valid = json.loads(valid_path.read_text(encoding="utf-8"))
+        valid["images"][0]["source_sha256"] = train["images"][0]["source_sha256"]
+        train["images"][0].update(
+            source_segment_start_seconds=0.0,
+            source_segment_end_seconds=2.0,
+        )
+        valid["images"][0].update(
+            source_segment_start_seconds=1.0,
+            source_segment_end_seconds=3.0,
+        )
+        train_path.write_text(json.dumps(train), encoding="utf-8")
+        valid_path.write_text(json.dumps(valid), encoding="utf-8")
+
+        with self.assertRaisesRegex(DatasetValidationError, "segments overlap"):
+            validate_dataset(self.root)
+
     def test_out_of_bounds_bbox_and_unknown_category_are_rejected(self) -> None:
         self.fixture.write_split(
             "test",
@@ -195,6 +242,15 @@ class CheckpointManifestTests(unittest.TestCase):
 
         self.assertEqual(manifest.model_version, "scoop-rfdetr-nano-v1")
         self.assertFalse(adapter.loaded)
+
+    def test_detector_confidence_can_be_overridden_without_loading_model(self) -> None:
+        adapter = RFDETRLocalAdapter(self.manifest_path, confidence_threshold=0.1)
+
+        self.assertEqual(adapter.confidence_threshold, 0.1)
+        self.assertFalse(adapter.loaded)
+
+        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+            RFDETRLocalAdapter(self.manifest_path, confidence_threshold=1.1)
 
     def test_checksum_tampering_is_rejected(self) -> None:
         self.checkpoint.write_bytes(b"tampered")

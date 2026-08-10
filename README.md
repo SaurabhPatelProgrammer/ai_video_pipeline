@@ -36,7 +36,11 @@ local artifacts and are excluded by `.gitignore`:
 
 - `.env`, camera credentials, and site-specific camera configuration;
 - raw video, extracted frames, evidence, reports, and databases;
-- trained profiles, checkpoints, downloaded weights, and virtual environments.
+- training datasets, intermediate checkpoints, downloaded weights, and virtual environments.
+
+The checksum-verified V2 inference bundle is the only committed model bundle.
+Its `.pth` file is stored with Git LFS; raw captures and training checkpoints
+remain local-only.
 
 Before sharing logs or reports, verify that they do not contain camera URLs,
 credentials, customer or employee imagery, network addresses, or private local
@@ -54,6 +58,8 @@ paths.
 ```powershell
 git clone git@github.com:SaurabhPatelProgrammer/ai_video_pipeline.git
 Set-Location ai_video_pipeline
+git lfs install
+git lfs pull
 Copy-Item .env.example .env
 .\setup.ps1
 ```
@@ -61,6 +67,17 @@ Copy-Item .env.example .env
 The setup script installs the selected PyTorch build, project dependencies, and
 the editable `scoop-ai` package. CUDA 13.0 is the default; use `-Compute cu128`
 or `-Compute cpu` when appropriate.
+
+After `git lfs pull`, the deployable detector must exist at:
+
+```text
+models/ice-cream-item-rfdetr-nano-v2/
+|-- checkpoint_best_total.pth
+`-- model-manifest.json
+```
+
+The application verifies the checkpoint SHA-256 from the manifest before
+loading it. Datasets and annotated replay videos are not required for runtime.
 
 ## Production camera credentials
 

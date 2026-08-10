@@ -19,10 +19,13 @@ class SupervisionByteTrackAdapter:
         frame_rate: float = 10.0,
         confidence_threshold: float = 0.35,
         lost_track_seconds: float = 1.5,
+        minimum_matching_threshold: float = 0.8,
         tracker: object | None = None,
     ) -> None:
         if frame_rate <= 0 or lost_track_seconds <= 0:
             raise ValueError("frame_rate and lost_track_seconds must be positive")
+        if not 0 <= minimum_matching_threshold <= 1:
+            raise ValueError("minimum_matching_threshold must be between 0 and 1")
         self._class_ids: dict[str, int] = {}
         if tracker is None:
             import supervision as sv
@@ -32,7 +35,7 @@ class SupervisionByteTrackAdapter:
                 tracker = sv.ByteTrack(
                     track_activation_threshold=confidence_threshold,
                     lost_track_buffer=max(2, round(frame_rate * lost_track_seconds)),
-                    minimum_matching_threshold=0.8,
+                    minimum_matching_threshold=minimum_matching_threshold,
                     frame_rate=frame_rate,
                     minimum_consecutive_frames=2,
                 )

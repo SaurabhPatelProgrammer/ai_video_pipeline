@@ -13,6 +13,7 @@ class ObjectClass(str, Enum):
     SCOOP = "scoop"
     LOADED_SCOOP = "loaded_scoop"
     SERVING_CONTAINER = "serving_container"
+    ICE_CREAM_ITEM = "ice_cream_item"
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,4 +94,23 @@ class DepositEvent:
     confirmed_at: float
 
     def to_dict(self) -> dict[str, int | float]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class HandoverEvent:
+    """One tracked sellable item transferred from pickup to customer zone."""
+
+    event_id: int
+    timestamp: float
+    item_track_id: int
+    confidence: float
+    pickup_at: float
+    customer_entered_at: float
+    confirmed_at: float
+    center_x: float
+    center_y: float
+    route: str
+
+    def to_dict(self) -> dict[str, int | float | str]:
         return asdict(self)

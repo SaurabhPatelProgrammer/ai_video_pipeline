@@ -244,6 +244,25 @@ def _parser() -> argparse.ArgumentParser:
     replay.add_argument("--seed", type=int, default=42)
     replay.add_argument("--max-frames", type=int)
     replay.set_defaults(handler=_replay)
+
+    handover_replay = subparsers.add_parser(
+        "handover-replay", help="Replay generic ice-cream pickup-to-customer handovers"
+    )
+    handover_replay.add_argument("--video", type=Path, required=True)
+    handover_replay.add_argument("--checkpoint-manifest", type=Path, required=True)
+    handover_replay.add_argument("--zone-profile", type=Path, required=True)
+    handover_replay.add_argument("--output-dir", type=Path, required=True)
+    handover_replay.add_argument("--analysis-fps", type=float, default=6.0)
+    handover_replay.add_argument("--minimum-confidence", type=float)
+    handover_replay.add_argument("--minimum-transfer-seconds", type=float, default=0.20)
+    handover_replay.add_argument("--minimum-customer-dwell-seconds", type=float, default=0.12)
+    handover_replay.add_argument("--minimum-movement-distance", type=float, default=0.03)
+    handover_replay.add_argument("--sequence-timeout-seconds", type=float, default=5.0)
+    handover_replay.add_argument("--missing-tolerance-seconds", type=float, default=1.0)
+    handover_replay.add_argument("--duplicate-cooldown-seconds", type=float, default=3.5)
+    handover_replay.add_argument("--duplicate-distance", type=float, default=0.12)
+    handover_replay.add_argument("--max-frames", type=int)
+    handover_replay.set_defaults(handler=_handover_replay)
     return parser
 
 
@@ -725,6 +744,29 @@ def _replay(args: argparse.Namespace) -> int:
         args.checkpoint_manifest,
         output_path=args.output,
         seed=args.seed,
+        max_frames=args.max_frames,
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _handover_replay(args: argparse.Namespace) -> int:
+    from .training import run_handover_replay
+
+    report = run_handover_replay(
+        args.video,
+        args.checkpoint_manifest,
+        args.zone_profile,
+        args.output_dir,
+        analysis_fps=args.analysis_fps,
+        minimum_confidence=args.minimum_confidence,
+        minimum_transfer_seconds=args.minimum_transfer_seconds,
+        minimum_customer_dwell_seconds=args.minimum_customer_dwell_seconds,
+        minimum_movement_distance=args.minimum_movement_distance,
+        sequence_timeout_seconds=args.sequence_timeout_seconds,
+        missing_tolerance_seconds=args.missing_tolerance_seconds,
+        duplicate_cooldown_seconds=args.duplicate_cooldown_seconds,
+        duplicate_distance=args.duplicate_distance,
         max_frames=args.max_frames,
     )
     print(json.dumps(report, indent=2, sort_keys=True))

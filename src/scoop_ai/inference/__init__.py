@@ -14,6 +14,7 @@ from .interfaces import (
     observations_from_detections,
 )
 from .rfdetr_adapter import RFDETRLocalAdapter
+from .proximity_tracker import ProximityTrackerAdapter
 from .supervision_tracker import SupervisionByteTrackAdapter
 from .governance import (
     approval_payload,
@@ -30,6 +31,7 @@ __all__ = [
     "ManifestValidationError",
     "create_checkpoint_manifest",
     "RFDETRLocalAdapter",
+    "ProximityTrackerAdapter",
     "SupervisionByteTrackAdapter",
     "TrackerAdapter",
     "load_checkpoint_manifest",
