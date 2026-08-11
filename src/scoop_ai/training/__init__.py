@@ -8,6 +8,14 @@ from .dataset_validation import (
     validate_dataset,
 )
 from .event_evaluation import EvaluationEvent, EvaluationResult, evaluate_events
+from .handover_evaluation import (
+    HandoverEvaluationError,
+    build_truth_template,
+    evaluate_handovers,
+    format_summary,
+    load_replay_session,
+    load_truth,
+)
 from .session_split import deterministic_session_split
 from .motion_baseline import (
     MotionBaselineTrainingResult,
@@ -25,7 +33,13 @@ __all__ = [
     "DatasetValidationReport",
     "EvaluationEvent",
     "EvaluationResult",
+    "HandoverEvaluationError",
     "REQUIRED_CLASSES",
+    "build_truth_template",
+    "evaluate_handovers",
+    "format_summary",
+    "load_replay_session",
+    "load_truth",
     "deterministic_session_split",
     "MotionBaselineTrainingResult",
     "SessionMotionSummary",

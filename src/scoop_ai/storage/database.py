@@ -822,9 +822,10 @@ class SQLiteEventRepository:
         target = next((str(row[0]) for row in rows if str(row[0]) != active_version), None)
         if target is None:
             raise ValueError(f"no prior approved model exists for camera {camera_id!r}")
-        model = self._connection.execute(
-            "SELECT checkpoint_sha256 FROM model_versions WHERE model_version = ?", (target,)
-        ).fetchone()
+        with self._lock:
+            model = self._connection.execute(
+                "SELECT checkpoint_sha256 FROM model_versions WHERE model_version = ?", (target,)
+            ).fetchone()
         assert model is not None
         self.promote_model(
             camera_id=camera_id, model_version=target, manifest_sha256=str(model[0]),

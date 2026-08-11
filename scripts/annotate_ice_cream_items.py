@@ -177,7 +177,7 @@ class AnnotatorWindow(QMainWindow):
         self.progress = QLabel()
         self.filename = QLabel()
         self.help_text = QLabel(
-            "Active item पर LEFT-DRAG से box बनाएँ • Right-click/Backspace: last box हटाएँ • "
+            "LEFT-DRAG a box around each active item • Right-click/Backspace: delete last box • "
             "Enter: Save & Next • N: Negative • K: Skip • ←/→: Previous/Next"
         )
         self.help_text.setWordWrap(True)
@@ -307,13 +307,13 @@ class AnnotatorWindow(QMainWindow):
 
     def mark_annotated(self) -> None:
         if not self.canvas.boxes:
-            self.statusBar().showMessage("पहले active ice-cream item पर कम-से-कम एक box बनाएँ।", 4000)
+            self.statusBar().showMessage("Draw at least one box around the active ice-cream item first.", 4000)
             return
         self._record("annotated", self.canvas.boxes)
 
     def mark_negative(self) -> None:
         if self.canvas.boxes:
-            self.statusBar().showMessage("Negative mark करने से पहले boxes हटाएँ।", 4000)
+            self.statusBar().showMessage("Delete the boxes before marking this frame negative.", 4000)
             return
         self._record("negative", [])
 
@@ -330,7 +330,7 @@ class AnnotatorWindow(QMainWindow):
             self.index += 1
             self.load_current()
         else:
-            self.statusBar().showMessage("सभी frames पूरे हो गए।", 5000)
+            self.statusBar().showMessage("All frames are done.", 5000)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._save()

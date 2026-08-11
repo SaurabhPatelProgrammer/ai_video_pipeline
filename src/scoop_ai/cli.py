@@ -262,7 +262,41 @@ def _parser() -> argparse.ArgumentParser:
     handover_replay.add_argument("--duplicate-cooldown-seconds", type=float, default=3.5)
     handover_replay.add_argument("--duplicate-distance", type=float, default=0.12)
     handover_replay.add_argument("--max-frames", type=int)
+    handover_replay.add_argument(
+        "--device",
+        help="Inference device such as 'cuda' or 'cpu'; defaults to CUDA when available.",
+    )
     handover_replay.set_defaults(handler=_handover_replay)
+
+    truth_template = subparsers.add_parser(
+        "handover-truth-template",
+        help="Create a reviewer worksheet pre-filled with detected handovers",
+    )
+    truth_template.add_argument("--report", action="append", type=Path, required=True)
+    truth_template.add_argument("--output", type=Path, required=True)
+    truth_template.add_argument("--force", action="store_true")
+    truth_template.set_defaults(handler=_handover_truth_template)
+
+    handover_evaluate = subparsers.add_parser(
+        "handover-evaluate",
+        help="Score handover replay reports against reviewed ground truth",
+    )
+    handover_evaluate.add_argument("--report", action="append", type=Path, required=True)
+    handover_evaluate.add_argument("--truth", type=Path, required=True)
+    handover_evaluate.add_argument("--tolerance", type=float, default=7.0)
+    handover_evaluate.add_argument("--output", type=Path)
+    handover_evaluate.add_argument(
+        "--require-precision",
+        type=float,
+        help="Exit non-zero when overall precision is below this value.",
+    )
+    handover_evaluate.add_argument(
+        "--require-recall",
+        type=float,
+        help="Exit non-zero when overall recall is below this value.",
+    )
+    handover_evaluate.add_argument("--json", action="store_true", help="Print the full JSON report.")
+    handover_evaluate.set_defaults(handler=_handover_evaluate)
     return parser
 
 
@@ -461,7 +495,7 @@ def _database_restore(args: argparse.Namespace) -> int:
         args.output_dir,
         database_name=args.database_name,
     )
-    restored_database = Path(result["restored_database"] if isinstance(result, dict) and "restored_database" in result else args.output_dir / args.database_name)
+    restored_database = Path(result["restored_database"])
     with SQLiteEventRepository(restored_database) as repository:
         repository.record_audit(AuditLogRecord(
             audit_id=str(uuid.uuid4()), occurred_at=utc_now_iso(), actor=args.actor,
@@ -768,8 +802,57 @@ def _handover_replay(args: argparse.Namespace) -> int:
         duplicate_cooldown_seconds=args.duplicate_cooldown_seconds,
         duplicate_distance=args.duplicate_distance,
         max_frames=args.max_frames,
+        device=args.device,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _handover_truth_template(args: argparse.Namespace) -> int:
+    from .training import build_truth_template
+
+    if args.output.exists() and not args.force:
+        raise ValueError(
+            f"refusing to overwrite reviewed ground truth: {args.output}; pass --force to replace it"
+        )
+    template = build_truth_template(args.report)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = args.output.with_name(args.output.name + ".tmp")
+    temporary.write_text(json.dumps(template, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(args.output)
+    candidates = sum(
+        len(details["transactions"]) for details in template["sessions"].values()
+    )
+    print(
+        f"Wrote {args.output} with {len(template['sessions'])} session(s) and "
+        f"{candidates} candidate row(s). Watch each annotated.mp4, delete rows that were "
+        f"not real handovers, fix quantity, and add the ones that were missed."
+    )
+    return 0
+
+
+def _handover_evaluate(args: argparse.Namespace) -> int:
+    from .training import evaluate_handovers, format_summary
+
+    result = evaluate_handovers(args.report, args.truth, tolerance_seconds=args.tolerance)
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = args.output.with_name(args.output.name + ".tmp")
+        temporary.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(args.output)
+    print(json.dumps(result, indent=2, sort_keys=True) if args.json else format_summary(result))
+    overall = result["overall"]
+    unmet = [
+        name
+        for name, minimum in (
+            ("precision", args.require_precision),
+            ("recall", args.require_recall),
+        )
+        if minimum is not None and overall[name] < minimum
+    ]
+    if unmet:
+        print(f"Below the requested threshold for: {', '.join(unmet)}", file=sys.stderr)
+        return 1
     return 0
 
 

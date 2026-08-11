@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import cv2
@@ -114,8 +115,15 @@ def run_handover_replay(
     duplicate_cooldown_seconds: float = 3.5,
     duplicate_distance: float = 0.12,
     max_frames: int | None = None,
+    device: str | None = None,
+    detector_factory: Callable[[Path, float | None], object] | None = None,
 ) -> dict[str, object]:
-    """Replay one video and write annotated video, evidence images, and JSON report."""
+    """Replay one video and write annotated video, evidence images, and JSON report.
+
+    ``device`` selects the inference device; ``None`` lets the adapter use CUDA
+    when it is available and fall back to CPU otherwise. ``detector_factory`` is
+    injectable so offline tests can exercise this pipeline without a checkpoint.
+    """
 
     video = Path(video_path).resolve()
     manifest_path = Path(checkpoint_manifest_path).resolve()
@@ -134,13 +142,17 @@ def run_handover_replay(
     evidence_directory.mkdir()
 
     pickup_zone, customer_zone = _load_zones(profile_path)
-    detector = RFDETRLocalAdapter(
-        manifest_path,
-        device="cuda",
-        confidence_threshold=minimum_confidence,
-        expected_classes=("ice_cream_item",),
+    detector = (
+        detector_factory(manifest_path, minimum_confidence)
+        if detector_factory is not None
+        else RFDETRLocalAdapter(
+            manifest_path,
+            device=device,
+            confidence_threshold=minimum_confidence,
+            expected_classes=("ice_cream_item",),
+        )
     )
-    confidence = detector.confidence_threshold
+    confidence = float(detector.confidence_threshold)
     tracker = ProximityTrackerAdapter(
         maximum_center_distance_pixels=120.0,
         lost_track_seconds=missing_tolerance_seconds,
@@ -166,6 +178,7 @@ def run_handover_replay(
     frames_processed = 0
     latencies: list[float] = []
     last_tracked = []
+    pending_evidence: list[str] = []
     event_flash_until = -1.0
     annotated_path = output / "annotated.mp4"
     writer = None
@@ -212,6 +225,9 @@ def run_handover_replay(
                     evidence_name = f"event-{event.event_id:04d}-{event.timestamp:.3f}s.jpg"
                     item["evidence_file"] = f"events/{evidence_name}"
                     events.append(item)
+                    # Every emitted event gets its own image from the frame that
+                    # confirmed it; several events can share one frame.
+                    pending_evidence.append(evidence_name)
                     event_flash_until = packet.timestamp_seconds + 1.0
 
             _draw_zone(frame, pickup_zone, (0, 190, 255), "PICKUP")
@@ -238,10 +254,11 @@ def run_handover_replay(
                 processed=frames_processed,
                 event_flash=packet.timestamp_seconds <= event_flash_until,
             )
-            if events and events[-1].get("evidence_file") and packet.timestamp_seconds <= event_flash_until:
-                evidence_path = output / str(events[-1]["evidence_file"])
-                if not evidence_path.exists():
-                    cv2.imwrite(str(evidence_path), frame)
+            for evidence_name in pending_evidence:
+                evidence_path = evidence_directory / evidence_name
+                if not evidence_path.exists() and not cv2.imwrite(str(evidence_path), frame):
+                    raise RuntimeError(f"could not write event evidence: {evidence_path}")
+            pending_evidence.clear()
             writer.write(frame)
     if writer is not None:
         writer.release()
