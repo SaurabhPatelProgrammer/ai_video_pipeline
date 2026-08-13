@@ -35,6 +35,8 @@ class ConfigurationTests(unittest.TestCase):
         )
 
         self.assertEqual(config.camera_id, "shop-01-counter-01")
+        self.assertEqual(config.pipeline, "handover")
+        self.assertEqual(config.handover.maximum_center_distance_pixels, 120.0)
         self.assertEqual(
             config.resolve_source(
                 credential_resolver=lambda key: f"rtsp://resolved/{key}"
@@ -99,6 +101,34 @@ reconnect_max_seconds = 5
         )
         with self.assertRaisesRegex(ConfigurationError, "cannot be below"):
             load_service_config(path)
+
+    def test_rejects_invalid_pipeline_and_handover_thresholds(self) -> None:
+        invalid_pipeline = self._write(
+            """
+[camera]
+camera_id = "camera-001"
+mode = "live"
+pipeline = "unknown"
+source = 0
+"""
+        )
+        with self.assertRaisesRegex(ConfigurationError, "camera.pipeline"):
+            load_camera_config(invalid_pipeline)
+
+        invalid_handover = self._write(
+            """
+[camera]
+camera_id = "camera-001"
+mode = "live"
+pipeline = "handover"
+source = 0
+
+[handover]
+duplicate_iou_threshold = 1.5
+"""
+        )
+        with self.assertRaisesRegex(ConfigurationError, "duplicate_iou_threshold"):
+            load_camera_config(invalid_handover)
 
     def _write(self, content: str) -> Path:
         directory = tempfile.TemporaryDirectory()

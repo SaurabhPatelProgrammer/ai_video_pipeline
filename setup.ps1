@@ -1,6 +1,7 @@
 param(
     [ValidateSet("cu130", "cu128", "cpu")]
-    [string]$Compute = "cu130"
+    [string]$Compute = "cu130",
+    [switch]$SkipDashboardShortcut
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,5 +56,10 @@ if ($LASTEXITCODE -ne 0) { throw "The scoop-ai package could not be installed." 
 
 & $PythonExe scripts\check_environment.py
 if ($LASTEXITCODE -ne 0) { throw "Environment verification failed." }
+if (-not $SkipDashboardShortcut) {
+    & (Join-Path $ProjectRoot "install-dashboard-shortcut.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "Dashboard shortcut could not be created." }
+}
 Write-Host ""
-Write-Host "Setup complete. Follow docs\PRODUCTION.md to provision credentials and validate a camera."
+Write-Host "Setup complete. Use the Scoop AI Dashboard desktop shortcut after provisioning the camera."
+Write-Host "Follow docs\PRODUCTION.md to provision credentials and validate a camera."

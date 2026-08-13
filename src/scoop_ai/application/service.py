@@ -20,9 +20,15 @@ from pathlib import Path
 from ..capture import LiveFrameSource, RecordedFrameSource
 from ..calibration import SceneQualityGuard, load_reference_fingerprint
 from ..config import load_camera_config, load_service_config
-from ..domain import DepositFSMConfig, ReleaseAwareDepositFSM
+from ..domain import (
+    DepositFSMConfig,
+    HandoverFSMConfig,
+    IceCreamHandoverFSM,
+    ReleaseAwareDepositFSM,
+)
 from ..inference import (
     RFDETRLocalAdapter,
+    ProximityTrackerAdapter,
     SupervisionByteTrackAdapter,
     validate_model_camera_compatibility,
     verify_manifest_approval,
@@ -299,8 +305,9 @@ def run_service(
         checkpoint_manifest_path,
         approved_reviewers=service_config.approved_reviewers,
         require_approval=service_config.environment == "production",
+        expected_classes=None,
     )
-    validate_model_camera_compatibility(manifest, camera_config)
+    pipeline = validate_model_camera_compatibility(manifest, camera_config)
     scene_guard = None
     if camera_config.calibration_profile is not None:
         scene_guard = SceneQualityGuard(
@@ -320,24 +327,72 @@ def run_service(
     evidence_root = artifact_root / "evidence"
     artifact_root.mkdir(parents=True, exist_ok=True)
 
-    detector = RFDETRLocalAdapter(Path(checkpoint_manifest_path))
-    tracker = SupervisionByteTrackAdapter(
-        frame_rate=camera_config.analysis_fps,
-        confidence_threshold=detector.manifest.confidence_threshold,
+    detector = RFDETRLocalAdapter(
+        Path(checkpoint_manifest_path), expected_classes=manifest.classes
     )
-    event_engine = ReleaseAwareDepositFSM(
-        DepositFSMConfig(
-            minimum_confidence=camera_config.event.minimum_confidence,
-            approach_distance=camera_config.event.approach_distance,
-            exit_distance=camera_config.event.exit_distance,
-            minimum_approach_seconds=camera_config.event.minimum_approach_seconds,
-            minimum_release_seconds=camera_config.event.minimum_release_seconds,
-            sequence_timeout_seconds=camera_config.event.sequence_timeout_seconds,
-            missing_tolerance_seconds=camera_config.event.missing_tolerance_seconds,
-            tub_zone=camera_config.tub_zone,
-            serving_zone=camera_config.serving_zone,
+    if pipeline == "handover":
+        handover_confidence = (
+            detector.manifest.confidence_threshold
+            if camera_config.handover.minimum_confidence is None
+            else camera_config.handover.minimum_confidence
         )
-    )
+        tracker = ProximityTrackerAdapter(
+            maximum_center_distance_pixels=(
+                camera_config.handover.maximum_center_distance_pixels
+            ),
+            lost_track_seconds=camera_config.handover.lost_track_seconds,
+            minimum_consecutive_frames=(
+                camera_config.handover.minimum_consecutive_frames
+            ),
+            duplicate_iou_threshold=camera_config.handover.duplicate_iou_threshold,
+        )
+        event_engine = IceCreamHandoverFSM(
+            HandoverFSMConfig(
+                pickup_zone=camera_config.tub_zone,
+                customer_zone=camera_config.serving_zone,
+                minimum_confidence=handover_confidence,
+                minimum_transfer_seconds=(
+                    camera_config.handover.minimum_transfer_seconds
+                ),
+                minimum_customer_dwell_seconds=(
+                    camera_config.handover.minimum_customer_dwell_seconds
+                ),
+                minimum_customer_observations=(
+                    camera_config.handover.minimum_customer_observations
+                ),
+                minimum_movement_distance=(
+                    camera_config.handover.minimum_movement_distance
+                ),
+                sequence_timeout_seconds=(
+                    camera_config.handover.sequence_timeout_seconds
+                ),
+                missing_tolerance_seconds=(
+                    camera_config.handover.missing_tolerance_seconds
+                ),
+                duplicate_cooldown_seconds=(
+                    camera_config.handover.duplicate_cooldown_seconds
+                ),
+                duplicate_distance=camera_config.handover.duplicate_distance,
+            )
+        )
+    else:
+        tracker = SupervisionByteTrackAdapter(
+            frame_rate=camera_config.analysis_fps,
+            confidence_threshold=detector.manifest.confidence_threshold,
+        )
+        event_engine = ReleaseAwareDepositFSM(
+            DepositFSMConfig(
+                minimum_confidence=camera_config.event.minimum_confidence,
+                approach_distance=camera_config.event.approach_distance,
+                exit_distance=camera_config.event.exit_distance,
+                minimum_approach_seconds=camera_config.event.minimum_approach_seconds,
+                minimum_release_seconds=camera_config.event.minimum_release_seconds,
+                sequence_timeout_seconds=camera_config.event.sequence_timeout_seconds,
+                missing_tolerance_seconds=camera_config.event.missing_tolerance_seconds,
+                tub_zone=camera_config.tub_zone,
+                serving_zone=camera_config.serving_zone,
+            )
+        )
     quality_gate = FrameQualityGate(
         minimum_blur_variance=camera_config.quality.minimum_blur_variance,
         pixel_change_threshold=camera_config.quality.pixel_change_threshold,
@@ -375,6 +430,7 @@ def run_service(
                 "classes": list(detector.manifest.classes),
                 "input_resolution": detector.manifest.input_resolution,
                 "approved_by": manifest.approved_by,
+                "pipeline": pipeline,
             },
         )
     )
@@ -386,7 +442,11 @@ def run_service(
             started_at=utc_now_iso(),
             model_version=detector.manifest.model_version,
             source_name=safe_source_name(source),
-            metadata={"mode": camera_config.mode, "active_model": active_model},
+            metadata={
+                "mode": camera_config.mode,
+                "pipeline": pipeline,
+                "active_model": active_model,
+            },
         )
     )
 
@@ -397,6 +457,7 @@ def run_service(
         "inference", HealthState.STARTING, "model not warmed",
         details={
             "model_version": detector.manifest.model_version,
+            "pipeline": pipeline,
             "active_model": active_model,
         },
     )
@@ -502,7 +563,7 @@ def run_service(
                     )
                     if packet is None:
                         last_inference_completed = time.monotonic()
-                        frame_age = reader.frame_age_seconds
+                        frame_age = reader.frame_age_seconds()
                         metrics.gauge("last_frame_age_seconds", frame_age or 0.0)
                         health.report("capture", HealthState.DEGRADED, reader.health.detail)
                         continue
@@ -631,28 +692,50 @@ def run_service(
                         encoded.tobytes(),
                         extension=".jpg",
                     )
+                    if pipeline == "handover":
+                        event_type = "ice_cream_handover_candidate"
+                        container_track_id = None
+                        scoop_track_id = None
+                        event_metadata = {
+                            "timestamp_domain": packet.timestamp_domain.value,
+                            "media_timestamp_seconds": packet.media_timestamp_seconds,
+                            "item_track_id": event.item_track_id,
+                            "pickup_at": event.pickup_at,
+                            "customer_entered_at": event.customer_entered_at,
+                            "confirmed_at": event.confirmed_at,
+                            "center_x": event.center_x,
+                            "center_y": event.center_y,
+                            "route": event.route,
+                        }
+                        candidate_metric = "handover_candidates_total"
+                    else:
+                        event_type = "scoop_deposited_candidate"
+                        container_track_id = event.container_track_id
+                        scoop_track_id = event.scoop_track_id
+                        event_metadata = {
+                            "timestamp_domain": packet.timestamp_domain.value,
+                            "media_timestamp_seconds": packet.media_timestamp_seconds,
+                            "loaded_at": event.loaded_at,
+                            "approached_at": event.approached_at,
+                            "released_at": event.released_at,
+                            "confirmed_at": event.confirmed_at,
+                        }
+                        candidate_metric = "scoop_candidates_total"
                     repository.insert_event(
                         EventRecord(
                             event_id=event_id,
                             session_id=session_id,
                             camera_id=camera_config.camera_id,
-                            event_type="scoop_deposited_candidate",
+                            event_type=event_type,
                             occurred_at=_utc_from_packet(packet),
                             confidence=event.confidence,
                             model_version=detector.manifest.model_version,
-                            container_track_id=event.container_track_id,
-                            scoop_track_id=event.scoop_track_id,
+                            container_track_id=container_track_id,
+                            scoop_track_id=scoop_track_id,
                             evidence_path=artifact.relative_path,
                             evidence_sha256=artifact.sha256,
                             review_state="unreviewed",
-                            metadata={
-                                "timestamp_domain": packet.timestamp_domain.value,
-                                "media_timestamp_seconds": packet.media_timestamp_seconds,
-                                "loaded_at": event.loaded_at,
-                                "approached_at": event.approached_at,
-                                "released_at": event.released_at,
-                                "confirmed_at": event.confirmed_at,
-                            },
+                            metadata=event_metadata,
                         )
                     )
                     deadline = datetime.now(timezone.utc) + timedelta(days=14)
@@ -668,7 +751,7 @@ def run_service(
                             retention_deadline=deadline.isoformat(timespec="milliseconds"),
                         )
                     )
-                    metrics.increment("scoop_candidates_total")
+                    metrics.increment(candidate_metric)
 
                 now = time.monotonic()
                 if now - last_retention >= 3600:

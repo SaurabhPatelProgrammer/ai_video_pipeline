@@ -2,6 +2,7 @@
 camera_id = "shop-01-counter-01"
 enabled = true
 mode = "live"
+pipeline = "handover"
 # Resolve this reference through the Windows credential provider. Never store
 # the RTSP URL/password in version-controlled configuration.
 credential_key = "scoop-ai/shop-01-counter-01/rtsp-url"
@@ -12,7 +13,8 @@ expected_width = 1920
 expected_height = 1080
 
 [zones]
-# Normalized points must be recalibrated against the locked production view.
+# For the handover pipeline, tub is the pickup/preparation zone and serving is
+# the customer handover zone. Recalibrate both against the locked camera view.
 tub = [[0.28, 0.52], [0.75, 0.52], [0.75, 0.87], [0.28, 0.87]]
 serving = [[0.15, 0.25], [0.56, 0.25], [0.56, 0.49], [0.15, 0.49]]
 
@@ -27,6 +29,7 @@ obstruction_seconds = 1.0
 minimum_fps_ratio = 0.50
 
 [event]
+# Used only by the legacy three-class deposit pipeline.
 minimum_confidence = 0.35
 approach_distance = 0.18
 exit_distance = 0.24
@@ -34,6 +37,22 @@ minimum_approach_seconds = 0.10
 minimum_release_seconds = 0.08
 sequence_timeout_seconds = 8.0
 missing_tolerance_seconds = 0.35
+
+[handover]
+# Used by the one-class ice_cream_item pipeline. An omitted confidence uses
+# the checksum-verified model manifest threshold.
+maximum_center_distance_pixels = 120.0
+lost_track_seconds = 1.0
+minimum_consecutive_frames = 1
+duplicate_iou_threshold = 0.50
+minimum_transfer_seconds = 0.20
+minimum_customer_dwell_seconds = 0.12
+minimum_customer_observations = 2
+minimum_movement_distance = 0.03
+sequence_timeout_seconds = 5.0
+missing_tolerance_seconds = 1.0
+duplicate_cooldown_seconds = 3.5
+duplicate_distance = 0.12
 
 [capture]
 reconnect_seconds = 3.0

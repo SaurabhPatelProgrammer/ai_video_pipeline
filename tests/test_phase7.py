@@ -115,10 +115,21 @@ class Phase7Tests(unittest.TestCase):
             tub_zone=((0.1, 0.1), (0.9, 0.1), (0.9, 0.9)),
             serving_zone=((0.1, 0.1), (0.9, 0.1), (0.9, 0.9)),
         )
-        validate_model_camera_compatibility(manifest, camera)
+        self.assertEqual(validate_model_camera_compatibility(manifest, camera), "deposit")
         incompatible = replace(camera, expected_width=320)
         with self.assertRaises(ValueError):
             validate_model_camera_compatibility(manifest, incompatible)
+
+        handover = replace(
+            manifest,
+            classes=("ice_cream_item",),
+            model_version="handover-v1",
+        )
+        self.assertEqual(validate_model_camera_compatibility(handover, camera), "handover")
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            validate_model_camera_compatibility(
+                handover, replace(camera, pipeline="deposit")
+            )
 
 
 if __name__ == "__main__":

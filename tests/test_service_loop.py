@@ -38,6 +38,7 @@ FRAME_HEIGHT = 480
 CONTAINER_XYXY = (0.45 * FRAME_WIDTH, 0.45 * FRAME_HEIGHT, 0.55 * FRAME_WIDTH, 0.60 * FRAME_HEIGHT)
 NEAR_XYXY = (0.40 * FRAME_WIDTH, 0.42 * FRAME_HEIGHT, 0.48 * FRAME_WIDTH, 0.50 * FRAME_HEIGHT)
 FAR_XYXY = (0.05 * FRAME_WIDTH, 0.05 * FRAME_HEIGHT, 0.12 * FRAME_WIDTH, 0.12 * FRAME_HEIGHT)
+OUTSIDE_XYXY = (0.82 * FRAME_WIDTH, 0.75 * FRAME_HEIGHT, 0.90 * FRAME_WIDTH, 0.85 * FRAME_HEIGHT)
 
 # FAR sits inside the tub polygon; NEAR does not. The container centre sits
 # inside the serving polygon.
@@ -120,7 +121,7 @@ class _ScriptedDetector:
         classes = ("scoop", "loaded_scoop", "serving_container")
         input_resolution = 320
 
-    def __init__(self, _manifest_path: Path) -> None:
+    def __init__(self, _manifest_path: Path, **_kwargs: object) -> None:
         self.manifest = self._Manifest()
         self.calls = 0
 
@@ -132,6 +133,28 @@ class _ScriptedDetector:
             class_name, box = step
             detections.append(Detection(class_name, 0.90, box, track_id=20))
         return detections
+
+
+class _HandoverDetector:
+    class _Manifest:
+        confidence_threshold = 0.10
+        model_version = "handover-model-v1"
+        architecture = "nano"
+        checkpoint_sha256 = "0" * 64
+        dataset_version = "handover-dataset-v1"
+        classes = ("ice_cream_item",)
+        input_resolution = 320
+
+    _boxes = (FAR_XYXY, FAR_XYXY, CONTAINER_XYXY, CONTAINER_XYXY, CONTAINER_XYXY, OUTSIDE_XYXY)
+
+    def __init__(self, _manifest_path: Path, **_kwargs: object) -> None:
+        self.manifest = self._Manifest()
+        self.calls = 0
+
+    def predict(self, frame: object, timestamp: float) -> list[Detection]:
+        box = self._boxes[min(self.calls, len(self._boxes) - 1)]
+        self.calls += 1
+        return [Detection("ice_cream_item", 0.90, box, track_id=30)]
 
 
 class _PassthroughTracker:
@@ -257,6 +280,49 @@ class ServiceLoopTests(unittest.TestCase):
             ) = originals
         return exit_code, root / "data"
 
+    def _run_handover(self, root: Path) -> tuple[int, Path]:
+        service, camera, manifest = self._write_configs(root)
+        manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+        manifest_data["classes"] = ["ice_cream_item"]
+        manifest_data["model_version"] = "handover-model-v1"
+        manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
+        camera.write_text(
+            camera.read_text(encoding="utf-8").replace(
+                "mode = 'recorded'", "mode = 'recorded'\npipeline = 'handover'"
+            ),
+            encoding="utf-8",
+        )
+        capture = _Capture(len(_HandoverDetector._boxes))
+
+        def recorded_factory(source, *, source_id):
+            return RecordedFrameSource(
+                source,
+                source_id=source_id,
+                capture_factory=lambda _: capture,
+            )
+
+        originals = (
+            service_module.RFDETRLocalAdapter,
+            service_module.ProximityTrackerAdapter,
+            service_module.RecordedFrameSource,
+        )
+        service_module.RFDETRLocalAdapter = _HandoverDetector
+        service_module.ProximityTrackerAdapter = _PassthroughTracker
+        service_module.RecordedFrameSource = recorded_factory
+        try:
+            exit_code = run_service(
+                service_config_path=service,
+                camera_config_path=camera,
+                checkpoint_manifest_path=manifest,
+            )
+        finally:
+            (
+                service_module.RFDETRLocalAdapter,
+                service_module.ProximityTrackerAdapter,
+                service_module.RecordedFrameSource,
+            ) = originals
+        return exit_code, root / "data"
+
     def test_recorded_session_runs_to_eof_and_commits_event_and_evidence(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -303,6 +369,25 @@ class ServiceLoopTests(unittest.TestCase):
             self.assertEqual(
                 _scalar(database, "SELECT status FROM sessions"), "completed"
             )
+
+    def test_handover_model_uses_canonical_service_and_persists_candidate(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            exit_code, artifact_root = self._run_handover(root)
+            self.assertEqual(exit_code, 0)
+
+            database = artifact_root / "database" / "events.sqlite3"
+            with SQLiteEventRepository(database) as repository:
+                [event] = repository.list_events(limit=10)
+                self.assertEqual(event.event_type, "ice_cream_handover_candidate")
+                self.assertEqual(event.model_version, "handover-model-v1")
+                self.assertEqual(event.metadata["item_track_id"], 30)
+                self.assertEqual(event.metadata["route"], "pickup_to_customer")
+                self.assertIsNone(event.container_track_id)
+                self.assertIsNone(event.scoop_track_id)
+                self.assertTrue(
+                    repository.list_all_evidence()[0].relative_path.endswith(".jpg")
+                )
 
 
 if __name__ == "__main__":

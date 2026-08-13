@@ -52,6 +52,22 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--evidence-root", type=Path)
     review.set_defaults(handler=_review)
 
+    dashboard = subparsers.add_parser("dashboard", help="Open the local operator dashboard")
+    dashboard.add_argument("--database", type=Path, required=True)
+    dashboard.add_argument("--evidence-root", type=Path, required=True)
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=8090)
+    dashboard.add_argument("--no-browser", action="store_true")
+    dashboard.set_defaults(handler=_dashboard)
+
+    product = subparsers.add_parser("product", help="Run the complete local Scoop AI client")
+    product.add_argument("--product-root", type=Path, required=True)
+    product.add_argument("--checkpoint-manifest", type=Path, required=True)
+    product.add_argument("--host", default="127.0.0.1")
+    product.add_argument("--port", type=int, default=8090)
+    product.add_argument("--no-browser", action="store_true")
+    product.set_defaults(handler=_product)
+
     service = subparsers.add_parser("service", help="Run the headless edge service")
     service.add_argument("--service-config", type=Path, required=True)
     service.add_argument("--camera-config", type=Path, required=True)
@@ -395,6 +411,30 @@ def _review(args: argparse.Namespace) -> int:
     from .review.app import run_review_app
 
     return run_review_app(args.database, args.evidence_root)
+
+
+def _dashboard(args: argparse.Namespace) -> int:
+    from .dashboard import run_dashboard
+
+    return run_dashboard(
+        args.database,
+        args.evidence_root,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
+
+
+def _product(args: argparse.Namespace) -> int:
+    from .dashboard import run_product
+
+    return run_product(
+        args.product_root,
+        args.checkpoint_manifest,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
 
 
 def _service(args: argparse.Namespace) -> int:

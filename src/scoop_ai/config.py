@@ -228,6 +228,101 @@ class EventConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class HandoverConfig:
+    """Tracking and temporal thresholds for one-class item handovers."""
+
+    minimum_confidence: float | None = None
+    maximum_center_distance_pixels: float = 120.0
+    lost_track_seconds: float = 1.0
+    minimum_consecutive_frames: int = 1
+    duplicate_iou_threshold: float = 0.50
+    minimum_transfer_seconds: float = 0.20
+    minimum_customer_dwell_seconds: float = 0.12
+    minimum_customer_observations: int = 2
+    minimum_movement_distance: float = 0.03
+    sequence_timeout_seconds: float = 5.0
+    missing_tolerance_seconds: float = 1.0
+    duplicate_cooldown_seconds: float = 3.5
+    duplicate_distance: float = 0.12
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, object]) -> "HandoverConfig":
+        _unknown_keys(data, set(cls.__dataclass_fields__), "handover")
+        confidence_value = data.get("minimum_confidence")
+        confidence = None
+        if confidence_value is not None:
+            confidence = _positive_number(
+                confidence_value, "handover.minimum_confidence", allow_zero=True
+            )
+            if confidence > 1:
+                raise ConfigurationError("handover.minimum_confidence cannot exceed 1")
+        duplicate_iou = _positive_number(
+            data.get("duplicate_iou_threshold", 0.50),
+            "handover.duplicate_iou_threshold",
+        )
+        if duplicate_iou > 1:
+            raise ConfigurationError("handover.duplicate_iou_threshold cannot exceed 1")
+        return cls(
+            minimum_confidence=confidence,
+            maximum_center_distance_pixels=_positive_number(
+                data.get("maximum_center_distance_pixels", 120.0),
+                "handover.maximum_center_distance_pixels",
+            ),
+            lost_track_seconds=_positive_number(
+                data.get("lost_track_seconds", 1.0),
+                "handover.lost_track_seconds",
+            ),
+            minimum_consecutive_frames=_integer(
+                data.get("minimum_consecutive_frames", 1),
+                "handover.minimum_consecutive_frames",
+                minimum=1,
+                maximum=100,
+            ),
+            duplicate_iou_threshold=duplicate_iou,
+            minimum_transfer_seconds=_positive_number(
+                data.get("minimum_transfer_seconds", 0.20),
+                "handover.minimum_transfer_seconds",
+                allow_zero=True,
+            ),
+            minimum_customer_dwell_seconds=_positive_number(
+                data.get("minimum_customer_dwell_seconds", 0.12),
+                "handover.minimum_customer_dwell_seconds",
+                allow_zero=True,
+            ),
+            minimum_customer_observations=_integer(
+                data.get("minimum_customer_observations", 2),
+                "handover.minimum_customer_observations",
+                minimum=1,
+                maximum=100,
+            ),
+            minimum_movement_distance=_positive_number(
+                data.get("minimum_movement_distance", 0.03),
+                "handover.minimum_movement_distance",
+                allow_zero=True,
+            ),
+            sequence_timeout_seconds=_positive_number(
+                data.get("sequence_timeout_seconds", 5.0),
+                "handover.sequence_timeout_seconds",
+            ),
+            missing_tolerance_seconds=_positive_number(
+                data.get("missing_tolerance_seconds", 1.0),
+                "handover.missing_tolerance_seconds",
+                allow_zero=True,
+            ),
+            duplicate_cooldown_seconds=_positive_number(
+                data.get("duplicate_cooldown_seconds", 3.5),
+                "handover.duplicate_cooldown_seconds",
+                allow_zero=True,
+            ),
+            duplicate_distance=_positive_number(
+                data.get("duplicate_distance", 0.12),
+                "handover.duplicate_distance",
+                allow_zero=True,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceConfig:
     name: str
     environment: str
@@ -328,6 +423,7 @@ class CameraConfig:
     source_env: str | None
     credential_key: str | None
     analysis_fps: float
+    pipeline: str = "auto"
     calibration_profile: Path | None = None
     expected_width: int | None = None
     expected_height: int | None = None
@@ -336,6 +432,7 @@ class CameraConfig:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     quality: QualityConfig = field(default_factory=QualityConfig)
     event: EventConfig = field(default_factory=EventConfig)
+    handover: HandoverConfig = field(default_factory=HandoverConfig)
 
     def resolve_source(
         self,
@@ -474,7 +571,11 @@ def load_service_config(path: str | Path) -> ServiceConfig:
 
 def load_camera_config(path: str | Path) -> CameraConfig:
     data = _read_toml(path)
-    _unknown_keys(data, {"camera", "capture", "zones", "quality", "event"}, "document")
+    _unknown_keys(
+        data,
+        {"camera", "capture", "zones", "quality", "event", "handover"},
+        "document",
+    )
     camera = _required_table(data, "camera")
     _unknown_keys(
         camera,
@@ -482,6 +583,7 @@ def load_camera_config(path: str | Path) -> CameraConfig:
             "camera_id",
             "enabled",
             "mode",
+            "pipeline",
             "source",
             "source_env",
             "credential_key",
@@ -503,6 +605,9 @@ def load_camera_config(path: str | Path) -> CameraConfig:
     mode = str(camera.get("mode", "live")).lower()
     if mode not in {"live", "recorded"}:
         raise ConfigurationError("camera.mode must be 'live' or 'recorded'")
+    pipeline = str(camera.get("pipeline", "auto")).strip().lower()
+    if pipeline not in {"auto", "deposit", "handover"}:
+        raise ConfigurationError("camera.pipeline must be 'auto', 'deposit', or 'handover'")
     source = camera.get("source")
     source_env = camera.get("source_env")
     credential_key = camera.get("credential_key")
@@ -556,12 +661,14 @@ def load_camera_config(path: str | Path) -> CameraConfig:
     )
     quality_data = data.get("quality", {})
     event_data = data.get("event", {})
-    if not isinstance(quality_data, dict) or not isinstance(event_data, dict):
-        raise ConfigurationError("[quality] and [event] must be tables")
+    handover_data = data.get("handover", {})
+    if not all(isinstance(value, dict) for value in (quality_data, event_data, handover_data)):
+        raise ConfigurationError("[quality], [event], and [handover] must be tables")
     return CameraConfig(
         camera_id=camera_id,
         enabled=enabled,
         mode=mode,
+        pipeline=pipeline,
         source=source,
         source_env=source_env,
         credential_key=credential_key,
@@ -577,4 +684,5 @@ def load_camera_config(path: str | Path) -> CameraConfig:
         capture=CaptureConfig.from_mapping(capture_data),
         quality=QualityConfig.from_mapping(quality_data),
         event=EventConfig.from_mapping(event_data),
+        handover=HandoverConfig.from_mapping(handover_data),
     )

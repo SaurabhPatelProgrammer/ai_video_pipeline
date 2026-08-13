@@ -1,5 +1,7 @@
 # IP Camera AI MVP
 
+> नया user शुरू कर रहा है या पूरे project को non-technical भाषा में समझना है? पहले **[संपूर्ण Hindi project guide](docs/COMPLETE-PROJECT-GUIDE-HINDI.md)** पढ़ें। इसमें installation, final model replay, zones, training, production operations, troubleshooting और file-by-file reference शामिल हैं।
+
 Fixed-camera video analytics for detecting completed ice-cream serving events.
 The repository contains a production-oriented Windows edge-service foundation,
 diagnostic OpenCV tools, dataset validation, model-manifest verification,
@@ -12,18 +14,25 @@ production path is the installable `scoop_ai` package documented in
 
 ## Repository status
 
-The implemented service pipeline is:
+The implemented canonical service selects a model-compatible event pipeline:
 
 ```text
 camera or recorded video
         -> capture and timestamping
         -> frame-quality gate
         -> RF-DETR detector
-        -> ByteTrack object tracker
-        -> release-aware deposit state machine
+        -> one-class proximity tracking -> ice-cream handover state machine
+           OR three-class ByteTrack -> release-aware deposit state machine
         -> SQLite event store and evidence files
         -> local review application
 ```
+
+The committed V2 model contains the single `ice_cream_item` class, so it uses
+the handover pipeline. Set `camera.pipeline = "handover"` in production camera
+configuration; `auto` is available for development and selects from the
+manifest classes. The older three-class deposit path remains supported only
+for manifests containing exactly `scoop`, `loaded_scoop`, and
+`serving_container`.
 
 The service currently emits reviewed-pilot candidate events. Production
 approval requires the acceptance gates recorded with each deployment.
@@ -38,7 +47,7 @@ local artifacts and are excluded by `.gitignore`:
 - raw video, extracted frames, evidence, reports, and databases;
 - training datasets, intermediate checkpoints, downloaded weights, and virtual environments.
 
-The checksum-verified V2 inference bundle is the only committed model bundle.
+The checksum-verified V2 handover inference bundle is the only committed model bundle.
 Its `.pth` file is stored with Git LFS; raw captures and training checkpoints
 remain local-only.
 
@@ -236,6 +245,39 @@ configured for pytest in CI:
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m compileall -q src tests scripts
 ```
+
+## Local operator dashboard
+
+Run the loopback-only browser dashboard on the shop computer:
+
+```powershell
+.\dashboard.ps1
+```
+
+It opens `http://127.0.0.1:8090` and provides daily candidate totals, service
+status, evidence review, accept/reject decisions, and item-quantity correction.
+The dashboard reads the same local SQLite database and evidence directory as
+the Windows edge service; camera video and event data are not uploaded.
+`setup.ps1` also creates a **Scoop AI Dashboard** desktop shortcut by default;
+use `-SkipDashboardShortcut` on developer machines that do not need it.
+
+On first launch, the client opens a guided setup wizard for shop details,
+credential-backed camera connection, live preview, and visual pickup/customer
+zone calibration. After setup, monitoring can be started or stopped from the
+dashboard. Client data remains under `D:\ip-camera-ai-data` by default.
+
+## Windows client installer
+
+Release builds use PyInstaller plus Inno Setup to create a self-contained
+Windows installer:
+
+```powershell
+.\build-installer.ps1
+```
+
+The installer output is written under `dist\installer`. It creates a desktop
+shortcut and a background startup entry. Tagged releases and manual runs of
+the `Windows installer` GitHub Actions workflow build the same artifact.
 
 ## Documentation map
 

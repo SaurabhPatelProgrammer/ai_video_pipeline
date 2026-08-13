@@ -9,7 +9,16 @@ from pathlib import Path
 from typing import Iterable
 
 from ..config import CameraConfig
-from .checkpoint_manifest import CheckpointManifest, ManifestValidationError, load_checkpoint_manifest
+from .checkpoint_manifest import (
+    CANONICAL_CLASSES,
+    CheckpointManifest,
+    ManifestValidationError,
+    load_checkpoint_manifest,
+)
+
+
+DEPOSIT_CLASSES = frozenset(CANONICAL_CLASSES)
+HANDOVER_CLASSES = frozenset({"ice_cream_item"})
 
 
 def approval_payload(manifest: CheckpointManifest) -> dict[str, object]:
@@ -38,8 +47,13 @@ def verify_manifest_approval(
     *,
     approved_reviewers: Iterable[str] = (),
     require_approval: bool = True,
+    expected_classes: tuple[str, ...] | None = CANONICAL_CLASSES,
 ) -> CheckpointManifest:
-    manifest = load_checkpoint_manifest(Path(manifest_path), verify_checkpoint=True)
+    manifest = load_checkpoint_manifest(
+        Path(manifest_path),
+        expected_classes=expected_classes,
+        verify_checkpoint=True,
+    )
     if not require_approval:
         return manifest
     if not manifest.approved_by or not manifest.reviewer_signature:
@@ -57,13 +71,27 @@ def verify_manifest_approval(
 def validate_model_camera_compatibility(
     manifest: CheckpointManifest,
     camera: CameraConfig,
-) -> None:
-    expected = {"scoop", "loaded_scoop", "serving_container"}
-    if set(manifest.classes) != expected:
-        raise ManifestValidationError("model classes are incompatible with the deposit state machine")
+) -> str:
+    """Validate model geometry and return the selected event pipeline."""
+
+    classes = frozenset(manifest.classes)
+    if classes == DEPOSIT_CLASSES:
+        inferred_pipeline = "deposit"
+    elif classes == HANDOVER_CLASSES:
+        inferred_pipeline = "handover"
+    else:
+        raise ManifestValidationError(
+            "model classes are incompatible with the supported deposit and handover pipelines"
+        )
+    if camera.pipeline != "auto" and camera.pipeline != inferred_pipeline:
+        raise ManifestValidationError(
+            f"camera pipeline {camera.pipeline!r} is incompatible with "
+            f"the {inferred_pipeline!r} model classes"
+        )
     if camera.tub_zone is None or camera.serving_zone is None:
         raise ManifestValidationError("camera zones are required for model compatibility validation")
     if camera.expected_width is not None and camera.expected_width < manifest.input_resolution:
         raise ManifestValidationError("camera width is smaller than the model input resolution")
     if camera.expected_height is not None and camera.expected_height < manifest.input_resolution:
         raise ManifestValidationError("camera height is smaller than the model input resolution")
+    return inferred_pipeline
