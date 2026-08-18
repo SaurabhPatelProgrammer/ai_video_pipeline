@@ -1,7 +1,5 @@
 # IP Camera AI MVP
 
-> नया user शुरू कर रहा है या पूरे project को non-technical भाषा में समझना है? पहले **[संपूर्ण Hindi project guide](docs/COMPLETE-PROJECT-GUIDE-HINDI.md)** पढ़ें। इसमें installation, final model replay, zones, training, production operations, troubleshooting और file-by-file reference शामिल हैं।
-
 Fixed-camera video analytics for detecting completed ice-cream serving events.
 The repository contains a production-oriented Windows edge-service foundation,
 diagnostic OpenCV tools, dataset validation, model-manifest verification,
@@ -9,8 +7,7 @@ review workflows, and experimental motion baselines.
 
 The current motion profiles are review-only prototypes. They are not billing-
 grade counters and must not drive autonomous commercial decisions. The canonical
-production path is the installable `scoop_ai` package documented in
-[`docs/PRODUCTION.md`](docs/PRODUCTION.md).
+production path is the installable `scoop_ai` package.
 
 ## Repository status
 
@@ -110,8 +107,8 @@ Copy-Item configs\cameras\shop-01-counter-01.example.toml `
 ```
 
 Calibrate the normalized tub and serving polygons against the locked camera
-view. The complete deployment procedure is in
-[`docs/PRODUCTION.md`](docs/PRODUCTION.md).
+view. For the handover pipeline, `tub` is the pickup/preparation zone and
+`serving` is the customer handover zone.
 
 ## Camera diagnostics
 
@@ -300,8 +297,3 @@ The Windows runtime currently keeps `setuptools>=78.1.1,<82` because Torch
 the Windows frozen build neither accepts nor packages untrusted source names.
 Remove this exception when the approved Torch runtime permits setuptools 83+
 and continue treating every other `pip-audit` finding as blocking.
-
-## Documentation map
-
-- [`docs/PRODUCTION.md`](docs/PRODUCTION.md): secure setup and service operation;
-- [`docs/RUNBOOKS.md`](docs/RUNBOOKS.md): operational incident procedures.

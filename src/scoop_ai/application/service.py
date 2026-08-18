@@ -373,6 +373,21 @@ def run_service(
                     camera_config.handover.duplicate_cooldown_seconds
                 ),
                 duplicate_distance=camera_config.handover.duplicate_distance,
+                customer_only_minimum_seconds=(
+                    camera_config.handover.customer_only_minimum_seconds
+                ),
+                customer_only_minimum_observations=(
+                    camera_config.handover.customer_only_minimum_observations
+                ),
+                customer_only_minimum_movement=(
+                    camera_config.handover.customer_only_minimum_movement
+                ),
+                customer_only_static_minimum_seconds=(
+                    camera_config.handover.customer_only_static_minimum_seconds
+                ),
+                customer_only_static_minimum_observations=(
+                    camera_config.handover.customer_only_static_minimum_observations
+                ),
             )
         )
     else:

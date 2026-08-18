@@ -15,6 +15,7 @@ from scoop_ai.config import (  # noqa: E402
     load_camera_config,
     load_service_config,
 )
+from scoop_ai.domain import HandoverFSMConfig  # noqa: E402
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -129,6 +130,91 @@ duplicate_iou_threshold = 1.5
         )
         with self.assertRaisesRegex(ConfigurationError, "duplicate_iou_threshold"):
             load_camera_config(invalid_handover)
+
+    def test_customer_only_thresholds_are_configurable(self) -> None:
+        path = self._write(
+            """
+[camera]
+camera_id = "camera-001"
+mode = "live"
+pipeline = "handover"
+source = 0
+
+[handover]
+customer_only_minimum_seconds = 1.25
+customer_only_minimum_observations = 5
+customer_only_minimum_movement = 0.08
+customer_only_static_minimum_seconds = 4.0
+customer_only_static_minimum_observations = 12
+"""
+        )
+        config = load_camera_config(path)
+
+        self.assertEqual(config.handover.customer_only_minimum_seconds, 1.25)
+        self.assertEqual(config.handover.customer_only_minimum_observations, 5)
+        self.assertEqual(config.handover.customer_only_minimum_movement, 0.08)
+        self.assertEqual(config.handover.customer_only_static_minimum_seconds, 4.0)
+        self.assertEqual(config.handover.customer_only_static_minimum_observations, 12)
+
+    def test_customer_only_defaults_match_the_state_machine(self) -> None:
+        path = self._write(
+            """
+[camera]
+camera_id = "camera-001"
+mode = "live"
+pipeline = "handover"
+source = 0
+"""
+        )
+        handover = load_camera_config(path).handover
+        defaults = HandoverFSMConfig(
+            pickup_zone=((0.0, 0.0), (0.1, 0.0), (0.1, 0.1)),
+            customer_zone=((0.5, 0.5), (0.6, 0.5), (0.6, 0.6)),
+        )
+
+        for name in (
+            "customer_only_minimum_seconds",
+            "customer_only_minimum_observations",
+            "customer_only_minimum_movement",
+            "customer_only_static_minimum_seconds",
+            "customer_only_static_minimum_observations",
+        ):
+            self.assertEqual(getattr(handover, name), getattr(defaults, name), name)
+
+    def test_rejects_contradictory_customer_only_thresholds(self) -> None:
+        shorter_static = self._write(
+            """
+[camera]
+camera_id = "camera-001"
+mode = "live"
+pipeline = "handover"
+source = 0
+
+[handover]
+customer_only_minimum_seconds = 3.0
+customer_only_static_minimum_seconds = 1.0
+"""
+        )
+        with self.assertRaisesRegex(ConfigurationError, "customer_only_static_minimum_seconds"):
+            load_camera_config(shorter_static)
+
+        fewer_static = self._write(
+            """
+[camera]
+camera_id = "camera-001"
+mode = "live"
+pipeline = "handover"
+source = 0
+
+[handover]
+customer_only_minimum_observations = 9
+customer_only_static_minimum_observations = 4
+"""
+        )
+        with self.assertRaisesRegex(
+            ConfigurationError, "customer_only_static_minimum_observations"
+        ):
+            load_camera_config(fewer_static)
 
     def _write(self, content: str) -> Path:
         directory = tempfile.TemporaryDirectory()

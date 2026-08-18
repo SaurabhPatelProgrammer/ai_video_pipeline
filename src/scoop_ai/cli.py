@@ -272,11 +272,29 @@ def _parser() -> argparse.ArgumentParser:
     handover_replay.add_argument("--minimum-confidence", type=float)
     handover_replay.add_argument("--minimum-transfer-seconds", type=float, default=0.20)
     handover_replay.add_argument("--minimum-customer-dwell-seconds", type=float, default=0.12)
+    handover_replay.add_argument("--minimum-customer-observations", type=int, default=2)
     handover_replay.add_argument("--minimum-movement-distance", type=float, default=0.03)
     handover_replay.add_argument("--sequence-timeout-seconds", type=float, default=5.0)
     handover_replay.add_argument("--missing-tolerance-seconds", type=float, default=1.0)
     handover_replay.add_argument("--duplicate-cooldown-seconds", type=float, default=3.5)
     handover_replay.add_argument("--duplicate-distance", type=float, default=0.12)
+    # Tracker and customer-only thresholds. Defaults match the camera-config
+    # defaults so a replay reproduces what the live service would count.
+    handover_replay.add_argument("--maximum-center-distance-pixels", type=float, default=120.0)
+    handover_replay.add_argument(
+        "--lost-track-seconds",
+        type=float,
+        help="Track expiry; defaults to --missing-tolerance-seconds.",
+    )
+    handover_replay.add_argument("--minimum-consecutive-frames", type=int, default=1)
+    handover_replay.add_argument("--duplicate-iou-threshold", type=float, default=0.50)
+    handover_replay.add_argument("--customer-only-minimum-seconds", type=float, default=0.50)
+    handover_replay.add_argument("--customer-only-minimum-observations", type=int, default=3)
+    handover_replay.add_argument("--customer-only-minimum-movement", type=float, default=0.025)
+    handover_replay.add_argument("--customer-only-static-minimum-seconds", type=float, default=1.50)
+    handover_replay.add_argument(
+        "--customer-only-static-minimum-observations", type=int, default=6
+    )
     handover_replay.add_argument("--max-frames", type=int)
     handover_replay.add_argument(
         "--device",
@@ -836,11 +854,23 @@ def _handover_replay(args: argparse.Namespace) -> int:
         minimum_confidence=args.minimum_confidence,
         minimum_transfer_seconds=args.minimum_transfer_seconds,
         minimum_customer_dwell_seconds=args.minimum_customer_dwell_seconds,
+        minimum_customer_observations=args.minimum_customer_observations,
         minimum_movement_distance=args.minimum_movement_distance,
         sequence_timeout_seconds=args.sequence_timeout_seconds,
         missing_tolerance_seconds=args.missing_tolerance_seconds,
         duplicate_cooldown_seconds=args.duplicate_cooldown_seconds,
         duplicate_distance=args.duplicate_distance,
+        maximum_center_distance_pixels=args.maximum_center_distance_pixels,
+        lost_track_seconds=args.lost_track_seconds,
+        minimum_consecutive_frames=args.minimum_consecutive_frames,
+        duplicate_iou_threshold=args.duplicate_iou_threshold,
+        customer_only_minimum_seconds=args.customer_only_minimum_seconds,
+        customer_only_minimum_observations=args.customer_only_minimum_observations,
+        customer_only_minimum_movement=args.customer_only_minimum_movement,
+        customer_only_static_minimum_seconds=args.customer_only_static_minimum_seconds,
+        customer_only_static_minimum_observations=(
+            args.customer_only_static_minimum_observations
+        ),
         max_frames=args.max_frames,
         device=args.device,
     )

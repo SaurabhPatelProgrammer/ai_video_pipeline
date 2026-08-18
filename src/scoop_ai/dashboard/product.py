@@ -360,6 +360,11 @@ sequence_timeout_seconds = 5.0
 missing_tolerance_seconds = 1.0
 duplicate_cooldown_seconds = 3.5
 duplicate_distance = 0.12
+customer_only_minimum_seconds = 0.50
+customer_only_minimum_observations = 3
+customer_only_minimum_movement = 0.025
+customer_only_static_minimum_seconds = 1.50
+customer_only_static_minimum_observations = 6
 '''
         _atomic_text(self.paths.service_config, service_toml)
         _atomic_text(self.paths.camera_config, camera_toml)

@@ -62,4 +62,4 @@ if (-not $SkipDashboardShortcut) {
 }
 Write-Host ""
 Write-Host "Setup complete. Use the Scoop AI Dashboard desktop shortcut after provisioning the camera."
-Write-Host "Follow docs\PRODUCTION.md to provision credentials and validate a camera."
+Write-Host "Provision the camera with 'scoop-ai credential-set', then validate it with 'scoop-ai camera-check'."

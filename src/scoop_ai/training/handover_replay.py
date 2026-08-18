@@ -109,20 +109,33 @@ def run_handover_replay(
     minimum_confidence: float | None = None,
     minimum_transfer_seconds: float = 0.20,
     minimum_customer_dwell_seconds: float = 0.12,
+    minimum_customer_observations: int = 2,
     minimum_movement_distance: float = 0.03,
     sequence_timeout_seconds: float = 5.0,
     missing_tolerance_seconds: float = 1.0,
     duplicate_cooldown_seconds: float = 3.5,
     duplicate_distance: float = 0.12,
+    maximum_center_distance_pixels: float = 120.0,
+    lost_track_seconds: float | None = None,
+    minimum_consecutive_frames: int = 1,
+    duplicate_iou_threshold: float = 0.50,
+    customer_only_minimum_seconds: float = 0.50,
+    customer_only_minimum_observations: int = 3,
+    customer_only_minimum_movement: float = 0.025,
+    customer_only_static_minimum_seconds: float = 1.50,
+    customer_only_static_minimum_observations: int = 6,
     max_frames: int | None = None,
     device: str | None = None,
     detector_factory: Callable[[Path, float | None], object] | None = None,
 ) -> dict[str, object]:
     """Replay one video and write annotated video, evidence images, and JSON report.
 
-    ``device`` selects the inference device; ``None`` lets the adapter use CUDA
-    when it is available and fall back to CPU otherwise. ``detector_factory`` is
-    injectable so offline tests can exercise this pipeline without a checkpoint.
+    Every tracker and state-machine threshold the live service reads from camera
+    TOML is a parameter here too, with the same default, so a replay accuracy
+    figure describes the configuration the service will actually run. ``device``
+    selects the inference device; ``None`` lets the adapter use CUDA when it is
+    available and fall back to CPU otherwise. ``detector_factory`` is injectable
+    so offline tests can exercise this pipeline without a checkpoint.
     """
 
     video = Path(video_path).resolve()
@@ -153,10 +166,16 @@ def run_handover_replay(
         )
     )
     confidence = float(detector.confidence_threshold)
+    # An unset lost_track_seconds keeps the historical behaviour of tying track
+    # expiry to the state machine's missing tolerance.
+    resolved_lost_track_seconds = (
+        missing_tolerance_seconds if lost_track_seconds is None else lost_track_seconds
+    )
     tracker = ProximityTrackerAdapter(
-        maximum_center_distance_pixels=120.0,
-        lost_track_seconds=missing_tolerance_seconds,
-        minimum_consecutive_frames=1,
+        maximum_center_distance_pixels=maximum_center_distance_pixels,
+        lost_track_seconds=resolved_lost_track_seconds,
+        minimum_consecutive_frames=minimum_consecutive_frames,
+        duplicate_iou_threshold=duplicate_iou_threshold,
     )
     fsm = IceCreamHandoverFSM(
         HandoverFSMConfig(
@@ -165,11 +184,19 @@ def run_handover_replay(
             minimum_confidence=confidence,
             minimum_transfer_seconds=minimum_transfer_seconds,
             minimum_customer_dwell_seconds=minimum_customer_dwell_seconds,
+            minimum_customer_observations=minimum_customer_observations,
             minimum_movement_distance=minimum_movement_distance,
             sequence_timeout_seconds=sequence_timeout_seconds,
             missing_tolerance_seconds=missing_tolerance_seconds,
             duplicate_cooldown_seconds=duplicate_cooldown_seconds,
             duplicate_distance=duplicate_distance,
+            customer_only_minimum_seconds=customer_only_minimum_seconds,
+            customer_only_minimum_observations=customer_only_minimum_observations,
+            customer_only_minimum_movement=customer_only_minimum_movement,
+            customer_only_static_minimum_seconds=customer_only_static_minimum_seconds,
+            customer_only_static_minimum_observations=(
+                customer_only_static_minimum_observations
+            ),
         )
     )
 
@@ -270,16 +297,30 @@ def run_handover_replay(
         if sorted_latencies
         else 0.0
     )
+    # Every threshold that can change the event list belongs here: the report
+    # checksum is only meaningful if it covers the whole configuration.
     settings = {
         "analysis_fps": analysis_fps,
         "minimum_confidence": confidence,
         "minimum_transfer_seconds": minimum_transfer_seconds,
         "minimum_customer_dwell_seconds": minimum_customer_dwell_seconds,
+        "minimum_customer_observations": minimum_customer_observations,
         "minimum_movement_distance": minimum_movement_distance,
         "sequence_timeout_seconds": sequence_timeout_seconds,
         "missing_tolerance_seconds": missing_tolerance_seconds,
         "duplicate_cooldown_seconds": duplicate_cooldown_seconds,
         "duplicate_distance": duplicate_distance,
+        "maximum_center_distance_pixels": maximum_center_distance_pixels,
+        "lost_track_seconds": resolved_lost_track_seconds,
+        "minimum_consecutive_frames": minimum_consecutive_frames,
+        "duplicate_iou_threshold": duplicate_iou_threshold,
+        "customer_only_minimum_seconds": customer_only_minimum_seconds,
+        "customer_only_minimum_observations": customer_only_minimum_observations,
+        "customer_only_minimum_movement": customer_only_minimum_movement,
+        "customer_only_static_minimum_seconds": customer_only_static_minimum_seconds,
+        "customer_only_static_minimum_observations": (
+            customer_only_static_minimum_observations
+        ),
         "max_frames": max_frames,
     }
     identity = {

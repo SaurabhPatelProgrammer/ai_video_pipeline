@@ -244,6 +244,14 @@ class HandoverConfig:
     missing_tolerance_seconds: float = 1.0
     duplicate_cooldown_seconds: float = 3.5
     duplicate_distance: float = 0.12
+    # The customer-only route recovers a handover whose pickup the detector
+    # never saw. It counts an item on no pickup evidence, so it is the most
+    # false-positive-prone path and must be tunable per site.
+    customer_only_minimum_seconds: float = 0.50
+    customer_only_minimum_observations: int = 3
+    customer_only_minimum_movement: float = 0.025
+    customer_only_static_minimum_seconds: float = 1.50
+    customer_only_static_minimum_observations: int = 6
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, object]) -> "HandoverConfig":
@@ -262,6 +270,41 @@ class HandoverConfig:
         )
         if duplicate_iou > 1:
             raise ConfigurationError("handover.duplicate_iou_threshold cannot exceed 1")
+        customer_only_seconds = _positive_number(
+            data.get("customer_only_minimum_seconds", 0.50),
+            "handover.customer_only_minimum_seconds",
+            allow_zero=True,
+        )
+        customer_only_observations = _integer(
+            data.get("customer_only_minimum_observations", 3),
+            "handover.customer_only_minimum_observations",
+            minimum=2,
+            maximum=1000,
+        )
+        customer_only_static_seconds = _positive_number(
+            data.get("customer_only_static_minimum_seconds", 1.50),
+            "handover.customer_only_static_minimum_seconds",
+            allow_zero=True,
+        )
+        customer_only_static_observations = _integer(
+            data.get("customer_only_static_minimum_observations", 6),
+            "handover.customer_only_static_minimum_observations",
+            minimum=2,
+            maximum=1000,
+        )
+        # Mirror the state machine's cross-field rules here so a bad camera file
+        # fails as a ConfigurationError at load time instead of a ValueError
+        # deep inside engine construction.
+        if customer_only_static_seconds < customer_only_seconds:
+            raise ConfigurationError(
+                "handover.customer_only_static_minimum_seconds cannot be below "
+                "customer_only_minimum_seconds"
+            )
+        if customer_only_static_observations < customer_only_observations:
+            raise ConfigurationError(
+                "handover.customer_only_static_minimum_observations cannot be below "
+                "customer_only_minimum_observations"
+            )
         return cls(
             minimum_confidence=confidence,
             maximum_center_distance_pixels=_positive_number(
@@ -319,6 +362,15 @@ class HandoverConfig:
                 "handover.duplicate_distance",
                 allow_zero=True,
             ),
+            customer_only_minimum_seconds=customer_only_seconds,
+            customer_only_minimum_observations=customer_only_observations,
+            customer_only_minimum_movement=_positive_number(
+                data.get("customer_only_minimum_movement", 0.025),
+                "handover.customer_only_minimum_movement",
+                allow_zero=True,
+            ),
+            customer_only_static_minimum_seconds=customer_only_static_seconds,
+            customer_only_static_minimum_observations=customer_only_static_observations,
         )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 import unittest
@@ -14,6 +15,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from scoop_ai.config import HandoverConfig  # noqa: E402
 from scoop_ai.inference import Detection  # noqa: E402
 from scoop_ai.training import run_handover_replay  # noqa: E402
 
@@ -163,6 +165,36 @@ class HandoverReplayTests(unittest.TestCase):
             self._replay(directory, (0.5,), "replay")
             with self.assertRaises(FileExistsError):
                 self._replay(directory, (0.5,), "replay")
+
+    def test_replay_defaults_match_the_live_camera_configuration(self) -> None:
+        """A replay accuracy figure only transfers if both paths share settings."""
+        parameters = inspect.signature(run_handover_replay).parameters
+        camera_defaults = HandoverConfig()
+
+        shared = set(parameters) & set(HandoverConfig.__dataclass_fields__)
+        # Guard the guard: if a threshold is renamed on one side only, this
+        # test must fail loudly rather than silently comparing nothing.
+        self.assertIn("customer_only_minimum_seconds", shared)
+        self.assertIn("maximum_center_distance_pixels", shared)
+
+        for name in sorted(shared):
+            expected = getattr(camera_defaults, name)
+            actual = parameters[name].default
+            if name == "lost_track_seconds":
+                # Replay resolves an unset value to missing_tolerance_seconds.
+                self.assertIsNone(actual)
+                actual = parameters["missing_tolerance_seconds"].default
+            self.assertEqual(actual, expected, f"{name} default differs from camera config")
+
+    def test_report_settings_record_every_threshold(self) -> None:
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            settings = self._replay(directory, (0.5,), "replay")["settings"]
+
+        for name in HandoverConfig.__dataclass_fields__:
+            if name == "minimum_confidence":
+                continue  # recorded as the resolved detector threshold
+            self.assertIn(name, settings)
 
 
 if __name__ == "__main__":
