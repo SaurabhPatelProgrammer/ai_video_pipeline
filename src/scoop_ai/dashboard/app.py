@@ -236,6 +236,9 @@ class DashboardServer:
             self._json(handler, 403, {"error": "local_access_only"})
             return
         parsed = urlsplit(handler.path)
+        if parsed.path == "/api/setup/discover":
+            self._setup_discover(handler)
+            return
         if parsed.path == "/api/setup/camera-test":
             self._setup_camera_test(handler)
             return
@@ -335,9 +338,26 @@ class DashboardServer:
             source = data.get("source")
             if not isinstance(source, str):
                 raise ValueError("camera URL is required")
-            result = self.product_manager.test_camera(source)
+            camera_identity = data.get("camera_device_identity")
+            if camera_identity is not None and not isinstance(camera_identity, str):
+                raise ValueError("camera device identity must be a string")
+            result = self.product_manager.test_camera(
+                source,
+                camera_device_identity=camera_identity,
+            )
             self._json(handler, 200, {key: value for key, value in result.items() if key != "jpeg"})
         except (ValueError, RuntimeError) as exc:
+            self._json(handler, 400, {"error": str(exc)})
+
+    def _setup_discover(self, handler: BaseHTTPRequestHandler) -> None:
+        if self.product_manager is None:
+            self._json(handler, 404, {"error": "setup_not_available"})
+            return
+        try:
+            self._read_json(handler)
+            cameras = self.product_manager.discover_cameras()
+            self._json(handler, 200, {"cameras": cameras})
+        except (ValueError, RuntimeError, OSError) as exc:
             self._json(handler, 400, {"error": str(exc)})
 
     def _setup_preview(self, handler: BaseHTTPRequestHandler, token: str) -> None:

@@ -13,13 +13,33 @@ from pathlib import Path
 import numpy as np
 
 from scoop_ai.dashboard import DashboardServer, ProductManager
+from scoop_ai.dashboard.discovery import DiscoveredCamera, parse_probe_matches
 from scoop_ai.dashboard.product import PreviewSession
 from scoop_ai.inference.checkpoint_manifest import create_checkpoint_manifest
 from scoop_ai.storage import EvidenceRecord, EventRecord, EvidenceWriter, SessionRecord, SQLiteEventRepository
 
 
 NOW = "2026-08-13T08:30:00+00:00"
+DISCOVERED = DiscoveredCamera(
+    device_id="urn:uuid:camera-123",
+    name="Main Counter Camera",
+    host="192.168.1.40",
+    service_url="http://192.168.1.40/onvif/device_service",
+    scopes=("onvif://www.onvif.org/name/Main_Counter_Camera",),
+)
 
+
+class DiscoveryTests(unittest.TestCase):
+    def test_probe_match_is_parsed_without_vendor_dependencies(self) -> None:
+        payload = b'''<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+ xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+ xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery"><s:Body><d:ProbeMatches><d:ProbeMatch>
+ <a:EndpointReference><a:Address>urn:uuid:camera-123</a:Address></a:EndpointReference>
+ <d:Scopes>onvif://www.onvif.org/name/Main_Counter_Camera</d:Scopes>
+ <d:XAddrs>http://192.168.1.40/onvif/device_service</d:XAddrs>
+ </d:ProbeMatch></d:ProbeMatches></s:Body></s:Envelope>'''
+        cameras = parse_probe_matches(payload)
+        self.assertEqual(cameras, [DISCOVERED])
 
 class DashboardTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -121,6 +141,7 @@ class ProductSetupTests(unittest.TestCase):
         self.manager = ProductManager(
             root / "product", self.manifest,
             credential_writer=lambda key, value: self.credentials.__setitem__(key, value),
+            discovery_provider=lambda: [DISCOVERED],
         )
         self.manager._previews["preview-token"] = PreviewSession(  # noqa: SLF001
             source="rtsp://user:secret@camera.local/stream",
@@ -165,6 +186,41 @@ class ProductSetupTests(unittest.TestCase):
             self.assertFalse(status["configured"])
         finally:
             server.stop()
+
+    def test_discovery_endpoint_returns_safe_camera_metadata(self) -> None:
+        server = DashboardServer(
+            self.manager.paths.database, self.manager.paths.evidence,
+            port=0, product_manager=self.manager,
+        ).start()
+        try:
+            base = f"http://{server.address[0]}:{server.address[1]}"
+            request = urllib.request.Request(
+                base + "/api/setup/discover", data=b"{}",
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(request) as response:
+                payload = json.loads(response.read())
+            self.assertEqual(payload["cameras"][0]["device_id"], DISCOVERED.device_id)
+            self.assertEqual(payload["cameras"][0]["host"], DISCOVERED.host)
+        finally:
+            server.stop()
+
+    def test_stale_discovery_identity_is_rejected_before_camera_open(self) -> None:
+        with self.assertRaisesRegex(ValueError, "scan the network again"):
+            self.manager.test_camera(
+                "rtsp://camera.invalid/stream",
+                camera_device_identity="urn:uuid:unknown",
+            )
+
+    def test_local_device_and_site_identity_survive_restart(self) -> None:
+        initial = self.manager.status()
+        restarted = ProductManager(
+            self.manager.paths.root, self.manifest,
+            credential_writer=lambda key, value: self.credentials.__setitem__(key, value),
+            discovery_provider=lambda: [],
+        )
+        self.assertEqual(restarted.status()["device_id"], initial["device_id"])
+        self.assertEqual(restarted.status()["site_id"], initial["site_id"])
 
     def test_invalid_camera_id_is_rejected_before_secret_is_stored(self) -> None:
         with self.assertRaises(ValueError):

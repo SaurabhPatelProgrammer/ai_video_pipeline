@@ -508,6 +508,13 @@ def run_service(
                 rtsp_transport=camera_config.capture.rtsp_transport,
                 open_timeout_ms=camera_config.capture.open_timeout_ms,
                 read_timeout_ms=camera_config.capture.read_timeout_ms,
+                source_resolver=(
+                    lambda: camera_config.resolve_source(
+                        credential_resolver=resolve_credential
+                    )
+                )
+                if camera_config.credential_key is not None
+                else None,
             ).start()
         watchdog = ServiceWatchdog(
             health,

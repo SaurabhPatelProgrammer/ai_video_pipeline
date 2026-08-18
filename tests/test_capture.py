@@ -192,6 +192,68 @@ class LiveFrameSourceTests(unittest.TestCase):
         )
         self.assertEqual(low_jitter._reconnect_delay(1), 1.5)
 
+    def test_reconnect_re_resolves_a_secret_backed_source(self) -> None:
+        frame = np.full((2, 2, 3), 7, dtype=np.uint8)
+        captures = iter([
+            FakeCapture([], opened=False),
+            FakeCapture([frame], failure_delay=0.05),
+        ])
+        opened_sources: list[int | str] = []
+
+        def factory(source: int | str) -> FakeCapture:
+            opened_sources.append(source)
+            return next(captures, FakeCapture([], opened=False))
+
+        source = LiveFrameSource(
+            "rtsp://old-camera/stream",
+            source_id="camera-01",
+            reconnect_seconds=0,
+            reconnect_max_seconds=0,
+            reconnect_jitter_ratio=0,
+            capture_factory=factory,
+            source_resolver=lambda: "rtsp://new-camera/stream",
+        ).start()
+        deadline = time.monotonic() + 1.0
+        while source.health.frames_received < 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+        packet = source.read(timeout=0.2)
+        source.stop()
+
+        self.assertIsNotNone(packet)
+        self.assertGreaterEqual(len(opened_sources), 2)
+        self.assertEqual(opened_sources[:2], [
+            "rtsp://old-camera/stream",
+            "rtsp://new-camera/stream",
+        ])
+
+    def test_reconnect_without_resolver_reuses_original_source(self) -> None:
+        captures = iter([
+            FakeCapture([], opened=False),
+            FakeCapture([], opened=False),
+        ])
+        opened_sources: list[int | str] = []
+
+        def factory(source: int | str) -> FakeCapture:
+            opened_sources.append(source)
+            return next(captures, FakeCapture([], opened=False))
+
+        source = LiveFrameSource(
+            0,
+            source_id="webcam-01",
+            reconnect_seconds=0.01,
+            reconnect_max_seconds=0.01,
+            reconnect_jitter_ratio=0,
+            capture_factory=factory,
+        ).start()
+        deadline = time.monotonic() + 1.0
+        while len(opened_sources) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        source.stop()
+
+        self.assertGreaterEqual(len(opened_sources), 2)
+        self.assertEqual(opened_sources[:2], [0, 0])
+
 
 if __name__ == "__main__":
     unittest.main()

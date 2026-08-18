@@ -279,6 +279,28 @@ The installer output is written under `dist\installer`. It creates a desktop
 shortcut and a background startup entry. Tagged releases and manual runs of
 the `Windows installer` GitHub Actions workflow build the same artifact.
 
+Normal builds are development/pilot artifacts and also write
+`dist\installer\release-manifest.json` with the exact Git commit, hashes,
+sizes, dirty-tree state, and Authenticode status. A customer release uses the
+stricter gate:
+
+```powershell
+.\build-installer.ps1 -Release `
+  -CertificateThumbprint <authenticode-certificate-thumbprint> `
+  -CommercialLicenseAcknowledged
+```
+
+The release gate refuses a dirty or untagged tree, an unsigned build, and an
+installer above the configured two-billion-byte delivery ceiling. Keep pilot
+builds labelled as human-reviewed silent-pilot software.
+
+The Windows runtime currently keeps `setuptools>=78.1.1,<82` because Torch
+2.11 requires that upper bound. CI temporarily ignores only
+`PYSEC-2026-3447`, a macOS source-distribution Unicode-normalization advisory;
+the Windows frozen build neither accepts nor packages untrusted source names.
+Remove this exception when the approved Torch runtime permits setuptools 83+
+and continue treating every other `pip-audit` finding as blocking.
+
 ## Documentation map
 
 - [`docs/PRODUCTION.md`](docs/PRODUCTION.md): secure setup and service operation;

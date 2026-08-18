@@ -35,6 +35,7 @@ class LiveFrameSource:
         open_timeout_ms: int = 5000,
         read_timeout_ms: int = 5000,
         capture_factory: CaptureFactory | None = None,
+        source_resolver: Callable[[], int | str] | None = None,
         utc_now: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
         random_value: Callable[[], float] | None = None,
@@ -60,6 +61,7 @@ class LiveFrameSource:
         self.open_timeout_ms = open_timeout_ms
         self.read_timeout_ms = read_timeout_ms
         self._capture_factory = capture_factory
+        self._source_resolver = source_resolver
         self._utc_now = utc_now or (lambda: datetime.now(timezone.utc))
         self._monotonic = monotonic or time.monotonic
         self._random_value = random_value or random.random
@@ -139,16 +141,18 @@ class LiveFrameSource:
     def _reader_loop(self) -> None:
         attempted_open = False
         while not self._stopping.is_set():
+            reconnecting = attempted_open
             self._health.transition(
                 CaptureState.CONNECTING,
                 "opening live source",
-                reconnect=attempted_open,
+                reconnect=reconnecting,
             )
             attempted_open = True
             capture = None
             try:
+                current_source = self._source_for_attempt(reconnecting)
                 capture = open_live_capture(
-                    self.source,
+                    current_source,
                     rtsp_transport=self.rtsp_transport,
                     open_timeout_ms=self.open_timeout_ms,
                     read_timeout_ms=self.read_timeout_ms,
@@ -200,6 +204,25 @@ class LiveFrameSource:
                 self._stopping.wait(
                     self._reconnect_delay(self.health.consecutive_failures)
                 )
+
+    def _source_for_attempt(self, reconnecting: bool) -> int | str:
+        """Refresh a secret-backed source before reconnecting to a live camera."""
+
+        if not reconnecting or self._source_resolver is None:
+            return self.source
+        try:
+            resolved = self._source_resolver()
+        except Exception as exc:
+            # Do not include the original exception text: third-party credential
+            # backends may embed the secret source in their error message.
+            raise RuntimeError(
+                f"source resolver failed with {type(exc).__name__}"
+            ) from None
+        if isinstance(resolved, bool) or not isinstance(resolved, (int, str)):
+            raise RuntimeError("source resolver returned an invalid source type")
+        if isinstance(resolved, str) and not resolved.strip():
+            raise RuntimeError("source resolver returned an empty source")
+        return resolved
 
     def _mark_failure(self, detail: str) -> None:
         self._health.transition(

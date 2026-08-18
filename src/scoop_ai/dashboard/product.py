@@ -23,6 +23,7 @@ from ..config import load_camera_config, load_service_config
 from ..inference.checkpoint_manifest import load_checkpoint_manifest
 from ..security import safe_source_name, store_credential
 from ..storage import AuditLogRecord, SQLiteEventRepository, utc_now_iso
+from .discovery import DiscoveredCamera, discover_onvif_cameras
 
 
 CAMERA_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
@@ -37,6 +38,7 @@ class ProductPaths:
     camera_config: Path
     calibration: Path
     settings: Path
+    identity: Path
 
     @classmethod
     def under(cls, root: str | Path) -> "ProductPaths":
@@ -49,6 +51,7 @@ class ProductPaths:
             camera_config=base / "service" / "camera.toml",
             calibration=base / "calibration" / "camera.json",
             settings=base / "service" / "product.json",
+            identity=base / "service" / "identity.json",
         )
 
 
@@ -57,6 +60,7 @@ class PreviewSession:
     source: str
     frame: np.ndarray
     created_at: float
+    camera_device_identity: str | None = None
 
 
 def _atomic_text(path: Path, value: str) -> None:
@@ -90,15 +94,41 @@ class ProductManager:
         checkpoint_manifest: str | Path,
         *,
         credential_writer: Callable[[str, str], None] = store_credential,
+        discovery_provider: Callable[[], list[DiscoveredCamera]] = discover_onvif_cameras,
         process_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
     ) -> None:
         self.paths = ProductPaths.under(root)
         self.checkpoint_manifest = Path(checkpoint_manifest).resolve()
         self.credential_writer = credential_writer
+        self.discovery_provider = discovery_provider
         self.process_factory = process_factory
         self._previews: dict[str, PreviewSession] = {}
+        self._discoveries: dict[str, DiscoveredCamera] = {}
         self._lock = threading.RLock()
         self._monitor: subprocess.Popen[bytes] | None = None
+        self._ensure_identity()
+
+    def _ensure_identity(self) -> dict[str, object]:
+        if self.paths.identity.is_file():
+            try:
+                loaded = json.loads(self.paths.identity.read_text(encoding="utf-8"))
+                if (
+                    isinstance(loaded, dict)
+                    and isinstance(loaded.get("device_id"), str)
+                    and isinstance(loaded.get("site_id"), str)
+                ):
+                    return loaded
+            except (OSError, json.JSONDecodeError):
+                pass
+        identity: dict[str, object] = {
+            "schema_version": 1,
+            "device_id": f"edge-{uuid.uuid4()}",
+            "site_id": f"local-{uuid.uuid4()}",
+            "binding_state": "local_only",
+            "created_at": utc_now_iso(),
+        }
+        _atomic_text(self.paths.identity, json.dumps(identity, indent=2, sort_keys=True) + "\n")
+        return identity
 
     @property
     def configured(self) -> bool:
@@ -114,6 +144,7 @@ class ProductManager:
                 settings = loaded if isinstance(loaded, dict) else {}
             except (OSError, json.JSONDecodeError):
                 settings = {}
+        identity = self._ensure_identity()
         return {
             "configured": self.configured,
             "shop_name": settings.get("shop_name"),
@@ -121,6 +152,9 @@ class ProductManager:
             "camera_id": settings.get("camera_id"),
             "monitoring": self.monitoring,
             "pilot_mode": True,
+            "device_id": identity["device_id"],
+            "site_id": identity["site_id"],
+            "binding_state": identity.get("binding_state", "local_only"),
         }
 
     @property
@@ -130,10 +164,26 @@ class ProductManager:
                 self._monitor = None
             return self._monitor is not None
 
-    def test_camera(self, source: str, *, timeout_seconds: float = 12.0) -> dict[str, object]:
+    def discover_cameras(self) -> list[dict[str, object]]:
+        cameras = self.discovery_provider()
+        with self._lock:
+            self._discoveries = {camera.device_id: camera for camera in cameras}
+        return [camera.as_payload() for camera in cameras]
+
+    def test_camera(
+        self,
+        source: str,
+        *,
+        camera_device_identity: str | None = None,
+        timeout_seconds: float = 12.0,
+    ) -> dict[str, object]:
         source = source.strip()
         if not source or len(source) > 2048:
             raise ValueError("camera URL or webcam number is required")
+        if camera_device_identity is not None:
+            with self._lock:
+                if camera_device_identity not in self._discoveries:
+                    raise ValueError("selected camera discovery expired; scan the network again")
         parsed_source: int | str = int(source) if source.isdigit() else source
         capture = cv2.VideoCapture()
         capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
@@ -158,7 +208,12 @@ class ProductManager:
         with self._lock:
             cutoff = time.monotonic() - 900
             self._previews = {key: item for key, item in self._previews.items() if item.created_at >= cutoff}
-            self._previews[token] = PreviewSession(source=source, frame=frame.copy(), created_at=time.monotonic())
+            self._previews[token] = PreviewSession(
+                source=source,
+                frame=frame.copy(),
+                created_at=time.monotonic(),
+                camera_device_identity=camera_device_identity,
+            )
         return {
             "preview_token": token,
             "width": int(frame.shape[1]),
@@ -316,6 +371,7 @@ duplicate_distance = 0.12
             "camera_name": camera_name,
             "camera_id": camera_id,
             "credential_key": credential_key,
+            "camera_device_identity": preview.camera_device_identity,
             "model_version": manifest.model_version,
             "checkpoint_manifest": str(self.checkpoint_manifest),
             "pilot_mode": True,
@@ -323,6 +379,9 @@ duplicate_distance = 0.12
             "configured_at": utc_now_iso(),
         }
         _atomic_text(self.paths.settings, json.dumps(settings, indent=2, sort_keys=True) + "\n")
+        identity = self._ensure_identity()
+        identity["site_name"] = shop_name
+        _atomic_text(self.paths.identity, json.dumps(identity, indent=2, sort_keys=True) + "\n")
         with SQLiteEventRepository(self.paths.database) as repository:
             repository.record_audit(AuditLogRecord(
                 audit_id=str(uuid.uuid4()), occurred_at=utc_now_iso(), actor="local-setup-wizard",
