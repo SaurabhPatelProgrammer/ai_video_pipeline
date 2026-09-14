@@ -1,0 +1,28 @@
+[camera]
+camera_id = "replay-video-1"
+enabled = true
+mode = "live"
+pipeline = "handover"
+credential_key = "scoop-ai/replay-video-1/rtsp-url"
+device = "cpu"
+analysis_fps = 2.0
+# artifacts/raw-inputs/1.mp4 is 368x416; this is not the shop 1920x1080 config.
+expected_width = 368
+expected_height = 416
+
+[zones]
+# Replace these placeholders with zones calibrated on the selected video.
+tub = [[0.20, 0.45], [0.80, 0.45], [0.80, 0.90], [0.20, 0.90]]
+serving = [[0.10, 0.05], [0.90, 0.05], [0.90, 0.40], [0.10, 0.40]]
+
+[quality]
+analysis_width = 320
+minimum_fps_ratio = 0.50
+
+[capture]
+rtsp_transport = "tcp"
+reconnect_seconds = 3.0
+reconnect_max_seconds = 30.0
+open_timeout_ms = 5000
+read_timeout_ms = 5000
+read_wait_seconds = 2.0

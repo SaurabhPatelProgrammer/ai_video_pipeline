@@ -1,0 +1,4 @@
+rtspAddress: :8554
+paths:
+  training-video-1:
+    source: publisher

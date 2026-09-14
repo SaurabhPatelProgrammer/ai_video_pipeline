@@ -7,6 +7,17 @@ from .checkpoint_manifest import (
     create_checkpoint_manifest,
     load_checkpoint_manifest,
 )
+from ..compute import (
+    CPU_ANALYSIS_FPS_CEILING,
+    DEVICE_PREFERENCES,
+    ComputeCapability,
+    ComputeError,
+    clamp_analysis_fps,
+    configure_torch_threads,
+    describe_compute,
+    normalise_preference,
+    resolve_device,
+)
 from .interfaces import (
     Detection,
     DetectorAdapter,
@@ -25,8 +36,17 @@ from .governance import (
 
 __all__ = [
     "CANONICAL_CLASSES",
+    "CPU_ANALYSIS_FPS_CEILING",
+    "DEVICE_PREFERENCES",
     "CheckpointManifest",
+    "ComputeCapability",
+    "ComputeError",
     "Detection",
+    "clamp_analysis_fps",
+    "configure_torch_threads",
+    "describe_compute",
+    "normalise_preference",
+    "resolve_device",
     "DetectorAdapter",
     "ManifestValidationError",
     "create_checkpoint_manifest",

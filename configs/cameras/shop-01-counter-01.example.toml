@@ -6,6 +6,11 @@ pipeline = "handover"
 # Resolve this reference through the Windows credential provider. Never store
 # the RTSP URL/password in version-controlled configuration.
 credential_key = "scoop-ai/shop-01-counter-01/rtsp-url"
+# "auto" uses the GPU when one is present and the CPU otherwise. Pin "cuda" or
+# "cpu" only to reproduce a specific machine's behaviour.
+device = "auto"
+# The service lowers this to what the resolved device can sustain: 10 fps on GPU,
+# 2 fps on CPU. Run `scoop-ai compute-check` to see which applies here.
 analysis_fps = 10.0
 # Generate this versioned profile with `scoop-ai recalibrate` before production.
 calibration_profile = "D:\\ip-camera-ai-data\\calibration\\shop-01-counter-01.json"

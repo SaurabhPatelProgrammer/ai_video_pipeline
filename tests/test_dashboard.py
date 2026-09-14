@@ -88,7 +88,7 @@ class DashboardTests(unittest.TestCase):
     def test_dashboard_page_and_daily_payload(self) -> None:
         with urllib.request.urlopen(self.base + "/") as response:
             page = response.read().decode()
-        self.assertIn("Scoop AI Dashboard", page)
+        self.assertIn('id="events"', page)
         payload = self.get_json("/api/dashboard?date=2026-08-13&state=all")
         self.assertEqual(payload["summary"]["candidate_events"], 1)  # type: ignore[index]
         self.assertEqual(payload["summary"]["pending_review"], 1)  # type: ignore[index]
@@ -113,6 +113,27 @@ class DashboardTests(unittest.TestCase):
             urllib.request.urlopen(self.base + "/evidence/not-found")
         self.assertEqual(failure.exception.code, 404)
 
+    def test_shared_stylesheet_is_served_to_every_page(self) -> None:
+        with urllib.request.urlopen(self.base + "/app.css") as response:
+            self.assertEqual(response.headers["Content-Type"], "text/css; charset=utf-8")
+            body = response.read().decode()
+        self.assertIn("--accent", body)
+        for path in ("/", "/system"):
+            with urllib.request.urlopen(self.base + path) as response:
+                self.assertIn('href="/app.css"', response.read().decode())
+
+    def test_system_page_reports_hardware_and_paths(self) -> None:
+        with urllib.request.urlopen(self.base + "/system") as response:
+            self.assertIn('id="compute-rows"', response.read().decode())
+        payload = self.get_json("/api/system/info")
+        self.assertIn(payload["compute"]["device"], {"cuda", "cpu"})  # type: ignore[index]
+        self.assertEqual(payload["paths"]["database"], str(self.database))  # type: ignore[index]
+
+    def test_camera_page_is_not_available_without_product_mode(self) -> None:
+        with self.assertRaises(urllib.error.HTTPError) as failure:
+            urllib.request.urlopen(self.base + "/camera")
+        self.assertEqual(failure.exception.code, 404)
+
     def test_server_refuses_non_loopback_bind(self) -> None:
         with self.assertRaises(ValueError):
             DashboardServer(self.database, self.evidence, host="0.0.0.0", port=0)
@@ -122,6 +143,13 @@ class DashboardTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as failure:
             urllib.request.urlopen(request)
         self.assertEqual(failure.exception.code, 403)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Let a test observe a 303 instead of transparently following it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
 
 
 class ProductSetupTests(unittest.TestCase):
@@ -171,6 +199,57 @@ class ProductSetupTests(unittest.TestCase):
         self.assertTrue(self.manager.paths.database.is_file())
         self.assertTrue(self.manager.paths.calibration.is_file())
 
+    def test_camera_page_replaces_the_wizard_once_configured(self) -> None:
+        """A configured camera must never be sent back through onboarding."""
+
+        server = DashboardServer(
+            self.manager.paths.database, self.manager.paths.evidence,
+            port=0, product_manager=self.manager,
+        ).start()
+        try:
+            base = f"http://{server.address[0]}:{server.address[1]}"
+
+            # Before setup, /camera has nothing to show and defers to the wizard.
+            opener = urllib.request.build_opener(_NoRedirect())
+            with self.assertRaises(urllib.error.HTTPError) as redirect:
+                opener.open(base + "/camera")
+            self.assertEqual(redirect.exception.code, 303)
+            self.assertEqual(redirect.exception.headers["Location"], "/setup")
+
+            self.manager.save_setup(
+                preview_token="preview-token", shop_name="Test Shop",
+                camera_name="Main Counter", camera_id="main-counter",
+                pickup_zone=[[0.1, 0.55], [0.45, 0.55], [0.45, 0.9], [0.1, 0.9]],
+                customer_zone=[[0.55, 0.1], [0.9, 0.1], [0.9, 0.4], [0.55, 0.4]],
+            )
+
+            with urllib.request.urlopen(base + "/camera") as response:
+                page = response.read().decode()
+            self.assertIn('id="frame"', page)
+            self.assertNotIn('id="step-1"', page)
+
+            with urllib.request.urlopen(base + "/api/camera/settings") as response:
+                settings = json.loads(response.read())
+            self.assertEqual(settings["camera_id"], "main-counter")
+            self.assertEqual(settings["camera_name"], "Main Counter")
+            self.assertEqual(len(settings["pickup_zone"]), 4)
+            self.assertEqual(len(settings["customer_zone"]), 4)
+        finally:
+            server.stop()
+
+    def test_camera_settings_are_refused_before_setup(self) -> None:
+        server = DashboardServer(
+            self.manager.paths.database, self.manager.paths.evidence,
+            port=0, product_manager=self.manager,
+        ).start()
+        try:
+            base = f"http://{server.address[0]}:{server.address[1]}"
+            with self.assertRaises(urllib.error.HTTPError) as failure:
+                urllib.request.urlopen(base + "/api/camera/settings")
+            self.assertEqual(failure.exception.code, 409)
+        finally:
+            server.stop()
+
     def test_setup_page_is_default_until_product_is_configured(self) -> None:
         server = DashboardServer(
             self.manager.paths.database, self.manager.paths.evidence,
@@ -180,7 +259,7 @@ class ProductSetupTests(unittest.TestCase):
             base = f"http://{server.address[0]}:{server.address[1]}"
             with urllib.request.urlopen(base + "/") as response:
                 page = response.read().decode()
-            self.assertIn("First-time setup", page)
+            self.assertIn('id="save-setup"', page)
             with urllib.request.urlopen(base + "/api/product/status") as response:
                 status = json.loads(response.read())
             self.assertFalse(status["configured"])

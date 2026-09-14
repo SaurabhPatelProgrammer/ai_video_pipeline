@@ -6,6 +6,9 @@ import getpass
 import ipaddress
 import json
 import mimetypes
+import os
+import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -16,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from ..compute import describe_compute
 from ..storage import ReviewRecord, SQLiteEventRepository, utc_now_iso
 from .product import ProductManager
 
@@ -149,8 +153,29 @@ class DashboardServer:
                     self._json(handler, 404, {"error": "setup_not_available"})
                 else:
                     self._serve_static(handler, "setup.html", "text/html; charset=utf-8")
+            elif parsed.path == "/camera":
+                # An already-configured camera must not drop the operator back into
+                # first-run onboarding; that page is reached deliberately instead.
+                if self.product_manager is None:
+                    self._json(handler, 404, {"error": "setup_not_available"})
+                elif not self.product_manager.configured:
+                    self._redirect(handler, "/setup")
+                else:
+                    self._serve_static(handler, "camera.html", "text/html; charset=utf-8")
+            elif parsed.path == "/api/camera/settings":
+                self._camera_settings(handler)
+            elif parsed.path == "/api/camera/snapshot":
+                self._camera_snapshot(handler)
+            elif parsed.path == "/system":
+                self._serve_static(handler, "system.html", "text/html; charset=utf-8")
+            elif parsed.path == "/app.css":
+                self._serve_static(handler, "app.css", "text/css; charset=utf-8")
             elif parsed.path == "/api/product/status":
                 self._product_status(handler)
+            elif parsed.path == "/api/system/compute":
+                self._json(handler, 200, describe_compute().as_payload())
+            elif parsed.path == "/api/system/info":
+                self._system_info(handler)
             elif parsed.path.startswith("/api/setup/preview/"):
                 self._setup_preview(handler, unquote(parsed.path.removeprefix("/api/setup/preview/")))
             elif parsed.path == "/api/dashboard":
@@ -167,6 +192,34 @@ class DashboardServer:
     def _serve_static(self, handler: BaseHTTPRequestHandler, name: str, content_type: str) -> None:
         path = STATIC_ROOT / name
         self._send(handler, 200, path.read_bytes(), content_type)
+
+    @staticmethod
+    def _redirect(handler: BaseHTTPRequestHandler, location: str) -> None:
+        handler.send_response(303)
+        handler.send_header("Location", location)
+        handler.send_header("Content-Length", "0")
+        handler.send_header("Cache-Control", "no-store")
+        handler.end_headers()
+
+    def _camera_settings(self, handler: BaseHTTPRequestHandler) -> None:
+        if self.product_manager is None:
+            self._json(handler, 404, {"error": "setup_not_available"})
+            return
+        try:
+            self._json(handler, 200, self.product_manager.camera_settings())
+        except ValueError as exc:
+            self._json(handler, 409, {"error": str(exc)})
+
+    def _camera_snapshot(self, handler: BaseHTTPRequestHandler) -> None:
+        if self.product_manager is None:
+            self._json(handler, 404, {"error": "setup_not_available"})
+            return
+        try:
+            payload, _dimensions = self.product_manager.live_snapshot()
+        except ValueError as exc:
+            self._json(handler, 409, {"error": str(exc)})
+            return
+        self._send(handler, 200, payload, "image/jpeg")
 
     def _dashboard(self, handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> None:
         start, end, selected_date = _local_day_bounds(query.get("date", [None])[0])
@@ -236,11 +289,20 @@ class DashboardServer:
             self._json(handler, 403, {"error": "local_access_only"})
             return
         parsed = urlsplit(handler.path)
+        if parsed.path == "/api/system/reveal":
+            try:
+                self._system_reveal(handler)
+            except ValueError as exc:
+                self._json(handler, 400, {"error": str(exc)})
+            return
         if parsed.path == "/api/setup/discover":
             self._setup_discover(handler)
             return
         if parsed.path == "/api/setup/camera-test":
             self._setup_camera_test(handler)
+            return
+        if parsed.path == "/api/setup/onvif-connect":
+            self._setup_onvif_connect(handler)
             return
         if parsed.path == "/api/setup/save":
             self._setup_save(handler)
@@ -323,6 +385,47 @@ class DashboardServer:
                 return False
         return True
 
+    def _system_info(self, handler: BaseHTTPRequestHandler) -> None:
+        product = self.product_manager.status() if self.product_manager is not None else {}
+        self._json(handler, 200, {
+            "compute": describe_compute().as_payload(),
+            "product": product,
+            "paths": {
+                "root": str(
+                    self.product_manager.paths.root
+                    if self.product_manager is not None
+                    else self.database_path.parent
+                ),
+                "database": str(self.database_path),
+                "evidence": str(self.evidence_root),
+            },
+        })
+
+    def _system_reveal(self, handler: BaseHTTPRequestHandler) -> None:
+        """Open the client's own data folder in the operating-system file manager.
+
+        The path is the configured root, never anything the request supplies, so
+        this cannot be steered at another location.
+        """
+
+        self._read_json(handler)
+        root = (
+            self.product_manager.paths.root
+            if self.product_manager is not None
+            else self.evidence_root
+        )
+        try:
+            if os.name == "nt":
+                os.startfile(str(root))  # noqa: S606 - fixed, application-owned path
+            else:
+                subprocess.Popen(
+                    ["open" if sys.platform == "darwin" else "xdg-open", str(root)]
+                )
+        except OSError as exc:
+            self._json(handler, 400, {"error": f"the folder could not be opened: {exc}"})
+            return
+        self._json(handler, 200, {"opened": str(root)})
+
     def _product_status(self, handler: BaseHTTPRequestHandler) -> None:
         if self.product_manager is None:
             self._json(handler, 404, {"error": "product_mode_not_enabled"})
@@ -347,6 +450,27 @@ class DashboardServer:
             )
             self._json(handler, 200, {key: value for key, value in result.items() if key != "jpeg"})
         except (ValueError, RuntimeError) as exc:
+            self._json(handler, 400, {"error": str(exc)})
+
+    def _setup_onvif_connect(self, handler: BaseHTTPRequestHandler) -> None:
+        if self.product_manager is None:
+            self._json(handler, 404, {"error": "setup_not_available"})
+            return
+        try:
+            data = self._read_json(handler)
+            device_id = data.get("device_id")
+            username = data.get("username")
+            password = data.get("password")
+            if not all(isinstance(value, str) for value in (device_id, username, password)):
+                raise ValueError("camera selection, username and password are required")
+            result = self.product_manager.connect_discovered_camera(
+                device_id, username, password
+            )
+            # The JPEG is fetched separately by token; never echo the credential.
+            self._json(handler, 200, {
+                key: value for key, value in result.items() if key != "jpeg"
+            })
+        except (ValueError, RuntimeError, OSError) as exc:
             self._json(handler, 400, {"error": str(exc)})
 
     def _setup_discover(self, handler: BaseHTTPRequestHandler) -> None:

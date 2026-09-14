@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scoop AI &mdash; System</title>
+  <link rel="stylesheet" href="/app.css">
+  <style>
+    .rows {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--r-lg);
+      box-shadow: var(--shadow-1);
+      overflow: hidden;
+      margin-bottom: 22px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 210px 1fr;
+      gap: 16px;
+      align-items: baseline;
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13.5px;
+    }
+    .row:last-child { border-bottom: 0; }
+    .row dt { color: var(--text-2); }
+    .row dd { margin: 0; word-break: break-all; }
+    .row dd.path { font-family: var(--mono); font-size: 12.5px; }
+    .warnings { display: grid; gap: 8px; margin-bottom: 22px; }
+    @media (max-width: 700px) { .row { grid-template-columns: 1fr; gap: 2px; } }
+  </style>
+</head>
+<body>
+<div class="app">
+  <nav class="sidebar" aria-label="Sections">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">S</div>
+      <div>
+        <div class="brand-name">Scoop AI</div>
+        <div class="brand-sub" id="brand-sub">Local serving monitor</div>
+      </div>
+    </div>
+
+    <div class="nav-label">Monitor</div>
+    <a class="nav-item" href="/">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <rect x="1.8" y="2.5" width="12.4" height="11" rx="2"/><path d="M1.8 6.2h12.4M5.6 2.5v3.7"/>
+      </svg>
+      <span>Today</span>
+    </a>
+
+    <div class="nav-label">Configure</div>
+    <a class="nav-item" href="/camera">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <rect x="1.6" y="4" width="10" height="8" rx="1.8"/><path d="M11.6 7.4l2.8-1.8v4.8l-2.8-1.8z"/>
+      </svg>
+      <span>Camera</span>
+    </a>
+    <a class="nav-item" href="/system" aria-current="page">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <circle cx="8" cy="8" r="2.1"/>
+        <path d="M8 1.6v1.7M8 12.7v1.7M14.4 8h-1.7M3.3 8H1.6M12.5 3.5l-1.2 1.2M4.7 11.3l-1.2 1.2M12.5 12.5l-1.2-1.2M4.7 4.7L3.5 3.5"/>
+      </svg>
+      <span>System</span>
+    </a>
+  </nav>
+
+  <main class="main">
+    <header class="page-head">
+      <div>
+        <h1>System</h1>
+        <p>Hardware, model, and where this computer keeps its data.</p>
+      </div>
+      <div class="head-tools">
+        <button class="btn secondary" id="open-folder" type="button">Open data folder</button>
+      </div>
+    </header>
+
+    <div class="page-body">
+      <div id="warnings" class="warnings"></div>
+
+      <div class="section-head"><h2>Inference</h2></div>
+      <dl class="rows" id="compute-rows"></dl>
+
+      <div class="section-head"><h2>This installation</h2></div>
+      <dl class="rows" id="product-rows"></dl>
+    </div>
+  </main>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function toast(message) {
+  const node = $('toast');
+  node.textContent = message;
+  node.classList.add('show');
+  clearTimeout(node.dataset.timer);
+  node.dataset.timer = setTimeout(() => node.classList.remove('show'), 2400);
+}
+
+function rows(target, entries) {
+  const list = $(target);
+  list.replaceChildren();
+  for (const [label, value, mono] of entries) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    if (mono) dd.className = 'path';
+    dd.textContent = value;
+    row.append(dt, dd);
+    list.append(row);
+  }
+}
+
+const bytesToGb = value => value ? `${(value / 1e9).toFixed(1)} GB` : 'Not applicable';
+
+async function load() {
+  const response = await fetch('/api/system/info');
+  if (!response.ok) {
+    toast('System information is unavailable');
+    return;
+  }
+  const data = await response.json();
+  const compute = data.compute;
+  const product = data.product;
+
+  if (product.shop_name) $('brand-sub').textContent = product.shop_name;
+
+  rows('compute-rows', [
+    ['Inference device', compute.headline],
+    ['Selected target', compute.device],
+    ['NVIDIA runtime', compute.cuda_available ? `Available (CUDA ${compute.cuda_version})` : 'Not available'],
+    ['GPU memory', bytesToGb(compute.total_memory_bytes)],
+    ['Logical processors', String(compute.cpu_threads)],
+    ['Analysis rate ceiling', `${compute.recommended_analysis_fps} frames per second`],
+    ['PyTorch', compute.torch_version || 'Not installed']
+  ]);
+
+  rows('product-rows', [
+    ['Shop', product.shop_name || 'Not configured'],
+    ['Camera', product.camera_name || 'Not configured'],
+    ['Monitoring', product.monitoring ? 'Running' : 'Stopped'],
+    ['Mode', 'Human-reviewed pilot'],
+    ['Data storage', 'This computer only'],
+    ['Edge device ID', product.device_id, true],
+    ['Data folder', data.paths.root, true],
+    ['Event database', data.paths.database, true],
+    ['Evidence folder', data.paths.evidence, true]
+  ]);
+
+  const warnings = $('warnings');
+  warnings.replaceChildren();
+  for (const warning of compute.warnings) {
+    const note = document.createElement('div');
+    note.className = 'note bad';
+    note.textContent = warning;
+    warnings.append(note);
+  }
+}
+
+$('open-folder').onclick = async () => {
+  const button = $('open-folder');
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/system/reveal', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'The folder could not be opened');
+    toast('Opened the data folder');
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+};
+
+load();
+</script>
+</body>
+</html>

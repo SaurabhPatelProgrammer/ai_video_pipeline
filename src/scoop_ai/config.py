@@ -11,6 +11,8 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Mapping
 
+from .compute import ComputeError, normalise_preference
+
 
 class ConfigurationError(ValueError):
     """Raised when configuration is missing, ambiguous, or unsafe."""
@@ -476,6 +478,7 @@ class CameraConfig:
     credential_key: str | None
     analysis_fps: float
     pipeline: str = "auto"
+    device: str = "auto"
     calibration_profile: Path | None = None
     expected_width: int | None = None
     expected_height: int | None = None
@@ -640,6 +643,7 @@ def load_camera_config(path: str | Path) -> CameraConfig:
             "source_env",
             "credential_key",
             "analysis_fps",
+            "device",
             "calibration_profile",
             "expected_width",
             "expected_height",
@@ -660,6 +664,10 @@ def load_camera_config(path: str | Path) -> CameraConfig:
     pipeline = str(camera.get("pipeline", "auto")).strip().lower()
     if pipeline not in {"auto", "deposit", "handover"}:
         raise ConfigurationError("camera.pipeline must be 'auto', 'deposit', or 'handover'")
+    try:
+        device = normalise_preference(camera.get("device", "auto"), "camera.device")
+    except ComputeError as exc:
+        raise ConfigurationError(str(exc)) from exc
     source = camera.get("source")
     source_env = camera.get("source_env")
     credential_key = camera.get("credential_key")
@@ -721,6 +729,7 @@ def load_camera_config(path: str | Path) -> CameraConfig:
         enabled=enabled,
         mode=mode,
         pipeline=pipeline,
+        device=device,
         source=source,
         source_env=source_env,
         credential_key=credential_key,

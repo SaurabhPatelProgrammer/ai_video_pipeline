@@ -26,7 +26,7 @@ Source: "..\dist\ScoopAIClient\*"; DestDir: "{app}"; Flags: ignoreversion recurs
 [Icons]
 Name: "{autodesktop}\Scoop AI"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Scoop AI"; Filename: "{app}\{#MyAppExeName}"
-Name: "{userstartup}\Scoop AI Background"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--no-browser"; WorkingDir: "{app}"
+Name: "{userstartup}\Scoop AI Background"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--start-hidden"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Open Scoop AI setup"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Open Scoop AI"; Flags: nowait postinstall skipifsilent

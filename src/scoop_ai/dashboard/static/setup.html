@@ -1,26 +1,363 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Set up Scoop AI</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scoop AI &mdash; Camera setup</title>
+  <link rel="stylesheet" href="/app.css">
   <style>
-    :root{--ink:#17221d;--muted:#65726c;--paper:#f5f2ea;--card:#fffdf8;--line:#dedbd1;--green:#1c7752;--red:#b33b35;--shadow:0 18px 50px rgba(29,45,37,.10)}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}button,input{font:inherit}.shell{max-width:1040px;margin:auto;padding:30px 24px 70px}.brand{display:flex;align-items:center;gap:13px;margin-bottom:28px}.mark{width:43px;height:43px;border-radius:14px;background:var(--ink);color:#fff;display:grid;place-items:center;font-weight:800}.brand h1{font:700 23px/1.1 Georgia,serif;margin:0}.brand p{margin:4px 0 0;color:var(--muted);font-size:12px;letter-spacing:.06em;text-transform:uppercase}.layout{display:grid;grid-template-columns:250px 1fr;gap:20px}.aside,.panel{background:var(--card);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow)}.aside{padding:24px;height:max-content}.aside h2{font:600 24px/1.15 Georgia,serif;margin:0 0 10px}.aside>p{color:var(--muted)}.steps{margin-top:25px;display:grid;gap:17px}.step{display:flex;gap:11px;color:var(--muted)}.step span{display:grid;place-items:center;flex:none;width:28px;height:28px;border-radius:50%;background:#ebe8df;font-weight:700}.step.active{color:var(--ink);font-weight:650}.step.active span,.step.done span{background:#dcecdf;color:var(--green)}.panel{padding:30px}.panel h3{font:600 28px/1.15 Georgia,serif;margin:0 0 8px}.lead{color:var(--muted);margin:0 0 25px}.form{display:grid;grid-template-columns:1fr 1fr;gap:16px}.field{display:grid;gap:7px}.field.full{grid-column:1/-1}.field label{font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}.field input{width:100%;border:1px solid var(--line);border-radius:11px;padding:12px 13px;background:#fff}.hint{font-size:12px;color:var(--muted)}.secure{background:#edf5ee;color:#315e43;padding:11px 13px;border-radius:10px;font-size:13px}.discover{display:flex;align-items:center;gap:12px;margin-bottom:14px;padding:13px;background:#f1efe8;border-radius:12px}.discover span{color:var(--muted);font-size:13px}.camera-list{display:grid;gap:8px;margin-bottom:14px}.camera-card{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border:1px solid var(--line);border-radius:11px;background:#fff}.camera-card strong,.camera-card small{display:block}.camera-card small{color:var(--muted);margin-top:2px}.actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:24px}.btn{border:0;border-radius:10px;padding:11px 16px;font-weight:700;cursor:pointer}.primary{background:var(--green);color:white}.secondary{background:#ece9e1;color:var(--ink)}.btn:disabled{opacity:.5;cursor:wait}.message{margin-top:16px;padding:12px 14px;border-radius:10px;background:#f5e3df;color:var(--red)}.message.ok{background:#e2f0e4;color:var(--green)}.hidden{display:none!important}.preview-wrap{position:relative;background:#111;border-radius:16px;overflow:hidden;line-height:0}.preview-wrap img{display:block;width:100%;height:auto}.preview-wrap canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}.zone-tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:15px 0}.tool{border:1px solid var(--line);border-radius:9px;padding:9px 12px;background:#fff;cursor:pointer}.tool.active[data-zone="pickup"]{border-color:#e7a123;background:#fff0cf}.tool.active[data-zone="customer"]{border-color:#52aee8;background:#e4f4ff}.legend{display:flex;gap:15px;color:var(--muted);font-size:13px}.swatch{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px}.summary{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}.summary div{background:#f1efe8;border-radius:11px;padding:13px}.summary span{display:block;color:var(--muted);font-size:12px}.summary strong{display:block;margin-top:4px}@media(max-width:760px){.layout{grid-template-columns:1fr}.aside{display:none}.form,.summary{grid-template-columns:1fr}.field.full{grid-column:auto}.panel{padding:22px}.shell{padding:18px 14px 50px}.discover,.camera-card{align-items:flex-start;flex-direction:column}}
+    .steps { display: grid; gap: 2px; }
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 8px;
+      border-radius: var(--r-md);
+      font-size: 13.5px;
+      color: var(--text-3);
+    }
+    .step b { font-weight: 500; }
+    .step i {
+      flex: none;
+      display: grid;
+      place-items: center;
+      width: 21px; height: 21px;
+      border-radius: 50%;
+      border: 1.5px solid var(--line-strong);
+      font-size: 11px;
+      font-style: normal;
+      font-weight: 650;
+    }
+    .step.active { background: var(--accent-soft); color: var(--accent-text); }
+    .step.active b { font-weight: 620; }
+    .step.active i { border-color: currentColor; }
+    .step.done { color: var(--text-2); }
+    .step.done i { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .step.done i::after { content: "\2713"; }
+    .step.done i span { display: none; }
+
+    .panel {
+      max-width: 780px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--r-lg);
+      box-shadow: var(--shadow-1);
+      padding: 26px 28px;
+    }
+    .panel h2 { font-size: 17px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 6px; }
+    .lead { margin: 0 0 22px; font-size: 13.5px; color: var(--text-2); max-width: 60ch; }
+
+    .form { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .field.full { grid-column: 1 / -1; }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 9px;
+      margin-top: 24px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .discover {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-radius: var(--r-md);
+      padding: 12px 14px;
+      margin-bottom: 14px;
+    }
+    .discover span { font-size: 12.5px; color: var(--text-2); }
+
+    .camera-list { display: grid; gap: 7px; margin-bottom: 16px; }
+    .camera-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--r-md);
+      padding: 10px 12px;
+    }
+    .camera-card strong { display: block; font-size: 13.5px; font-weight: 600; }
+    .camera-card small { display: block; margin-top: 1px; font-size: 12px; color: var(--text-3); font-family: var(--mono); }
+
+    .message { margin-top: 16px; }
+
+    /* Reveal toggle: assembling an RTSP URL blind is the main way people get it
+       wrong, so the field can always be checked. */
+    .reveal { position: relative; }
+    .reveal input { padding-right: 40px; }
+    .peek {
+      position: absolute;
+      top: 50%;
+      right: 5px;
+      transform: translateY(-50%);
+      width: 30px; height: 30px;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: var(--r-sm);
+      background: transparent;
+      color: var(--text-3);
+      cursor: pointer;
+    }
+    .peek:hover { background: var(--surface-2); color: var(--text); }
+    .peek::before {
+      content: "";
+      width: 17px; height: 17px;
+      background: currentColor;
+      /* Eye, swapped for a struck-through eye while the value is visible. */
+      -webkit-mask: var(--eye) center / contain no-repeat;
+      mask: var(--eye) center / contain no-repeat;
+    }
+    .peek { --eye: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/></svg>'); }
+    .peek[aria-pressed="true"] { --eye: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/><path d="M3 21L21 3"/></svg>'); }
+
+    .onvif-login {
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-radius: var(--r-md);
+      padding: 15px;
+      margin-bottom: 16px;
+    }
+    .chosen { margin: 0 0 13px; font-size: 13px; color: var(--text-2); }
+    .chosen strong { color: var(--text); }
+    code {
+      font-family: var(--mono);
+      font-size: 12px;
+      background: var(--surface-3);
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+    .camera-card.selected { border-color: var(--accent); background: var(--accent-soft); }
+
+    .preview-wrap {
+      position: relative;
+      background: #0d1110;
+      border: 1px solid var(--line);
+      border-radius: var(--r-md);
+      overflow: hidden;
+      line-height: 0;
+    }
+    .preview-wrap img { display: block; width: 100%; height: auto; }
+    .preview-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+
+    .zone-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+    .tool {
+      border: 1px solid var(--line-strong);
+      border-radius: var(--r-md);
+      background: var(--surface);
+      padding: 6px 11px;
+      font-size: 13px;
+      font-weight: 550;
+      color: var(--text-2);
+      cursor: pointer;
+    }
+    .tool:hover { background: var(--surface-2); color: var(--text); }
+    .tool.active[data-zone="pickup"]   { border-color: #d99413; background: var(--warn-soft); color: var(--warn); }
+    .tool.active[data-zone="customer"] { border-color: #2f8fc9; background: var(--info-soft); color: var(--info); }
+    .legend { display: flex; gap: 14px; margin-left: auto; font-size: 12.5px; color: var(--text-2); }
+    .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
+
+    .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .summary div {
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-radius: var(--r-md);
+      padding: 11px 13px;
+    }
+    .summary span { display: block; font-size: 12px; color: var(--text-2); }
+    .summary strong { display: block; margin-top: 3px; font-size: 13.5px; font-weight: 600; word-break: break-all; }
+
+    @media (max-width: 760px) {
+      .form, .summary { grid-template-columns: 1fr; }
+      .field.full { grid-column: auto; }
+      .panel { padding: 20px; }
+      .legend { margin-left: 0; }
+    }
   </style>
 </head>
-<body><main class="shell"><header class="brand"><div class="mark">S</div><div><h1>Scoop AI</h1><p>First-time setup</p></div></header><div class="layout"><aside class="aside"><h2>Ready in a few minutes.</h2><p>Connect one fixed camera and show Scoop AI where handovers happen.</p><div class="steps"><div id="nav-1" class="step active"><span>1</span><div>Shop details</div></div><div id="nav-2" class="step"><span>2</span><div>Connect camera</div></div><div id="nav-3" class="step"><span>3</span><div>Draw zones</div></div><div id="nav-4" class="step"><span>4</span><div>Finish</div></div></div></aside><section class="panel">
-  <div id="step-1"><h3>Tell us about this counter</h3><p class="lead">These names appear only in your local dashboard.</p><div class="form"><div class="field full"><label for="shop">Shop name</label><input id="shop" maxlength="100" placeholder="Example: City Centre Shop"></div><div class="field"><label for="camera-name">Camera name</label><input id="camera-name" maxlength="100" value="Main counter"></div><div class="field"><label for="camera-id">Camera ID</label><input id="camera-id" maxlength="64" value="main-counter"><div class="hint">Lowercase letters, numbers and hyphens</div></div></div><div class="actions"><button class="btn primary" id="to-camera">Continue</button></div></div>
-  <div id="step-2" class="hidden"><h3>Connect the camera</h3><p class="lead">Find ONVIF cameras automatically, or use the complete RTSP address supplied by the camera vendor.</p><div class="discover"><button class="btn secondary" id="discover-cameras">Find cameras</button><span>Camera and this device must be on the same local network during discovery.</span></div><div id="camera-list" class="camera-list hidden"></div><div class="field"><label for="source">Camera URL</label><input id="source" type="password" autocomplete="new-password" placeholder="rtsp://username:password@camera-address/stream"><div class="hint">After selecting a camera, add its username, password and correct vendor stream path. Reserve the camera address in the router (DHCP reservation) before unattended use.</div><div class="secure">Secure: stored in Windows Credential Manager, never in configuration or cloud. Network discovery never changes a saved credential automatically.</div></div><div id="camera-message" class="message hidden"></div><div class="actions"><button class="btn secondary" data-back="1">Back</button><button class="btn primary" id="test-camera">Test camera</button></div></div>
-  <div id="step-3" class="hidden"><h3>Mark the handover areas</h3><p class="lead">Select a zone, then click at least three points around it. Keep the two areas separate.</p><div class="zone-tools"><button class="tool active" data-zone="pickup">1. Draw pickup area</button><button class="tool" data-zone="customer">2. Draw customer area</button><button class="tool" id="undo">Undo point</button><button class="tool" id="clear">Clear zones</button><div class="legend"><span><i class="swatch" style="background:#f4af28"></i>Pickup</span><span><i class="swatch" style="background:#42a9e6"></i>Customer</span></div></div><div class="preview-wrap"><img id="preview" alt="Camera preview used for zone calibration"><canvas id="zones"></canvas></div><div id="zone-message" class="message hidden"></div><div class="actions"><button class="btn secondary" data-back="2">Back</button><button class="btn primary" id="save-setup">Save and finish</button></div></div>
-  <div id="step-4" class="hidden"><h3>Your silent pilot is ready</h3><p class="lead">Scoop AI can now monitor this fixed camera locally. Review its suggestions before using any count operationally.</p><div class="summary"><div><span>Shop</span><strong id="summary-shop"></strong></div><div><span>Camera</span><strong id="summary-camera"></strong></div><div><span>Edge device</span><strong id="summary-device"></strong></div><div><span>Connection</span><strong id="summary-binding">Local only</strong></div><div><span>Storage</span><strong>Local computer only</strong></div><div><span>Mode</span><strong>Human-reviewed pilot</strong></div></div><div class="actions"><button class="btn primary" id="open-dashboard">Open dashboard</button></div></div>
-  </section></div></main>
+<body>
+<div class="app">
+  <nav class="sidebar" aria-label="Setup steps">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">S</div>
+      <div>
+        <div class="brand-name">Scoop AI</div>
+        <div class="brand-sub">Camera setup</div>
+      </div>
+    </div>
+
+    <div class="nav-label">Steps</div>
+    <div class="steps">
+      <div id="nav-1" class="step active"><i><span>1</span></i><b>Shop details</b></div>
+      <div id="nav-2" class="step"><i><span>2</span></i><b>Connect camera</b></div>
+      <div id="nav-3" class="step"><i><span>3</span></i><b>Draw zones</b></div>
+      <div id="nav-4" class="step"><i><span>4</span></i><b>Finish</b></div>
+    </div>
+
+    <div class="sidebar-foot">
+      <a class="nav-item" href="/">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <path d="M9.5 3.5L5 8l4.5 4.5"/>
+        </svg>
+        <span>Back to dashboard</span>
+      </a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="page-head">
+      <div>
+        <h1>Camera setup</h1>
+        <p>Connect one fixed camera and mark where handovers happen.</p>
+      </div>
+    </header>
+
+    <div class="page-body">
+      <section class="panel">
+        <div id="step-1">
+          <h2>Tell us about this counter</h2>
+          <p class="lead">These names appear only in your local dashboard.</p>
+          <div class="form">
+            <div class="field full">
+              <label for="shop">Shop name</label>
+              <input id="shop" maxlength="100" placeholder="Example: City Centre Shop">
+            </div>
+            <div class="field">
+              <label for="camera-name">Camera name</label>
+              <input id="camera-name" maxlength="100" value="Main counter">
+            </div>
+            <div class="field">
+              <label for="camera-id">Camera ID</label>
+              <input id="camera-id" maxlength="64" value="main-counter">
+              <div class="hint">Lowercase letters, numbers and hyphens</div>
+            </div>
+          </div>
+          <div class="actions"><button class="btn primary" id="to-camera">Continue</button></div>
+        </div>
+
+        <div id="step-2" class="hidden">
+          <h2>Connect the camera</h2>
+          <p class="lead">Find ONVIF cameras automatically, or use the complete RTSP address supplied by the camera vendor.</p>
+          <div class="discover">
+            <button class="btn secondary" id="discover-cameras">Find cameras</button>
+            <span>The camera and this computer must be on the same local network.</span>
+          </div>
+          <div id="camera-list" class="camera-list hidden"></div>
+
+          <div id="onvif-login" class="onvif-login hidden">
+            <p class="chosen">Signing in to <strong id="chosen-camera"></strong></p>
+            <div class="form">
+              <div class="field">
+                <label for="onvif-user">Camera username</label>
+                <input id="onvif-user" autocomplete="off" placeholder="admin">
+              </div>
+              <div class="field">
+                <label for="onvif-password">Camera password</label>
+                <div class="reveal">
+                  <input id="onvif-password" type="password" autocomplete="new-password">
+                  <button class="peek" type="button" data-peek="onvif-password"
+                          aria-label="Show password" aria-pressed="false"></button>
+                </div>
+              </div>
+            </div>
+            <div class="hint" style="margin-top:8px">Scoop AI asks the camera for its own stream address, so you do not need to know the vendor&rsquo;s RTSP path.</div>
+            <div class="actions" style="margin-top:14px;padding-top:0;border-top:0">
+              <button class="btn ghost" id="use-manual" type="button">Enter address manually</button>
+              <button class="btn primary" id="onvif-connect">Connect camera</button>
+            </div>
+          </div>
+
+          <div id="manual-entry">
+            <div class="field">
+              <label for="source">Camera URL</label>
+              <div class="reveal">
+                <input id="source" type="password" autocomplete="new-password"
+                       placeholder="rtsp://username:password@camera-address/stream1">
+                <button class="peek" type="button" data-peek="source"
+                        aria-label="Show camera URL" aria-pressed="false"></button>
+              </div>
+              <div class="hint">Include the username, password and the vendor stream path. Common paths are <code>/stream1</code>, <code>/Streaming/Channels/101</code> and <code>/cam/realmonitor?channel=1&amp;subtype=0</code>. Reserve the camera address in the router before unattended use.</div>
+            </div>
+            <div class="actions" style="margin-top:14px;padding-top:0;border-top:0">
+              <button class="btn primary" id="test-camera">Test camera</button>
+            </div>
+          </div>
+
+          <div class="note secure" style="margin-top:14px">Stored in Windows Credential Manager &mdash; never in configuration files or the cloud. Network discovery never overwrites a saved credential.</div>
+          <div id="camera-message" class="note message hidden"></div>
+          <div class="actions">
+            <button class="btn ghost" data-back="1">Back</button>
+          </div>
+        </div>
+
+        <div id="step-3" class="hidden">
+          <h2>Mark the handover areas</h2>
+          <p class="lead">Select a zone, then click at least three points around it on the preview. Keep the two areas separate.</p>
+          <div class="zone-tools">
+            <button class="tool active" data-zone="pickup">1. Pickup area</button>
+            <button class="tool" data-zone="customer">2. Customer area</button>
+            <button class="tool" id="undo">Undo point</button>
+            <button class="tool" id="clear">Clear</button>
+            <div class="legend">
+              <span><i class="swatch" style="background:#f4af28"></i>Pickup</span>
+              <span><i class="swatch" style="background:#42a9e6"></i>Customer</span>
+            </div>
+          </div>
+          <div class="preview-wrap">
+            <img id="preview" alt="Camera preview used for zone calibration">
+            <canvas id="zones"></canvas>
+          </div>
+          <div id="zone-message" class="note message hidden"></div>
+          <div class="actions">
+            <button class="btn ghost" data-back="2">Back</button>
+            <button class="btn primary" id="save-setup">Save and finish</button>
+          </div>
+        </div>
+
+        <div id="step-4" class="hidden">
+          <h2>Your silent pilot is ready</h2>
+          <p class="lead">Scoop AI can now monitor this fixed camera locally. Review its suggestions before using any count operationally.</p>
+          <div class="summary">
+            <div><span>Shop</span><strong id="summary-shop"></strong></div>
+            <div><span>Camera</span><strong id="summary-camera"></strong></div>
+            <div><span>Edge device</span><strong id="summary-device"></strong></div>
+            <div><span>Connection</span><strong id="summary-binding">Local only</strong></div>
+            <div><span>Storage</span><strong>This computer only</strong></div>
+            <div><span>Mode</span><strong>Human-reviewed pilot</strong></div>
+          </div>
+          <div class="actions"><button class="btn primary" id="open-dashboard">Open dashboard</button></div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
 <script>
 const $=id=>document.getElementById(id);let previewToken='',activeZone='pickup',cameraDeviceIdentity=null;const zones={pickup:[],customer:[]};
 function show(step){for(let i=1;i<=4;i++){$(`step-${i}`).classList.toggle('hidden',i!==step);const nav=$(`nav-${i}`);nav.classList.toggle('active',i===step);nav.classList.toggle('done',i<step)}}
-function message(id,text,ok=false){const node=$(id);node.textContent=text;node.classList.remove('hidden');node.classList.toggle('ok',ok)}
+function message(id,text,ok=false){const node=$(id);node.textContent=text;node.classList.remove('hidden');node.classList.toggle('ok',ok);node.classList.toggle('bad',!ok)}
 $('to-camera').onclick=()=>{if($('shop').value.trim().length<2||$('camera-name').value.trim().length<2||!/^[a-z0-9][a-z0-9-]{2,63}$/.test($('camera-id').value)){alert('Enter valid shop, camera name and camera ID.');return}show(2)};
 document.querySelectorAll('[data-back]').forEach(button=>button.onclick=()=>show(Number(button.dataset.back)));
-$('discover-cameras').onclick=async()=>{const button=$('discover-cameras'),list=$('camera-list');button.disabled=true;button.textContent='Searching...';list.replaceChildren();list.classList.add('hidden');message('camera-message','Searching this local network for ONVIF cameras...');try{const response=await fetch('/api/setup/discover',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),data=await response.json();if(!response.ok)throw new Error(data.error||'Camera discovery failed');if(!data.cameras.length){message('camera-message','No ONVIF cameras found. You can still enter the RTSP URL manually.');return}data.cameras.forEach(camera=>{const card=document.createElement('div');card.className='camera-card';const detail=document.createElement('div'),name=document.createElement('strong'),host=document.createElement('small'),use=document.createElement('button');name.textContent=camera.name;host.textContent=camera.host;detail.append(name,host);use.className='btn secondary';use.type='button';use.textContent='Use camera';use.onclick=()=>{cameraDeviceIdentity=camera.device_id;const safeHost=camera.host.includes(':')?`[${camera.host}]`:camera.host;$('source').value=`rtsp://${safeHost}:554/stream`;message('camera-message',`${camera.name} selected. Complete its RTSP login and stream path, then test.`,true)};card.append(detail,use);list.append(card)});list.classList.remove('hidden');message('camera-message',`${data.cameras.length} camera${data.cameras.length===1?'':'s'} found.`,true)}catch(error){message('camera-message',error.message)}finally{button.disabled=false;button.textContent='Find cameras'}};
-$('test-camera').onclick=async()=>{const button=$('test-camera');button.disabled=true;message('camera-message','Connecting to camera...');try{const response=await fetch('/api/setup/camera-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:$('source').value,camera_device_identity:cameraDeviceIdentity})});const data=await response.json();if(!response.ok)throw new Error(data.error||'Camera test failed');previewToken=data.preview_token;$('source').value='';$('preview').src=`/api/setup/preview/${encodeURIComponent(previewToken)}`;await $('preview').decode();sizeCanvas();message('camera-message',`Connected - ${data.width} x ${data.height}`,true);show(3)}catch(error){message('camera-message',error.message)}finally{button.disabled=false}};
+/* Reveal toggles: an RTSP URL typed blind is the most common setup mistake. */
+document.querySelectorAll('[data-peek]').forEach(button=>button.onclick=()=>{const input=$(button.dataset.peek),shown=input.type==='text';input.type=shown?'password':'text';button.setAttribute('aria-pressed',String(!shown));button.setAttribute('aria-label',(shown?'Show ':'Hide ')+(input.id==='source'?'camera URL':'password'))});
+
+function chooseDiscovered(camera,card){cameraDeviceIdentity=camera.device_id;document.querySelectorAll('.camera-card').forEach(item=>item.classList.toggle('selected',item===card));$('chosen-camera').textContent=`${camera.name} (${camera.host})`;$('onvif-login').classList.remove('hidden');$('manual-entry').classList.add('hidden');$('camera-message').classList.add('hidden');$('onvif-user').focus()}
+
+$('use-manual').onclick=()=>{$('onvif-login').classList.add('hidden');$('manual-entry').classList.remove('hidden');$('source').focus()};
+
+async function usePreview(data){previewToken=data.preview_token;$('source').value='';$('onvif-password').value='';$('preview').src=`/api/setup/preview/${encodeURIComponent(previewToken)}`;await $('preview').decode();sizeCanvas();show(3)}
+
+$('discover-cameras').onclick=async()=>{const button=$('discover-cameras'),list=$('camera-list');button.disabled=true;button.textContent='Searching...';list.replaceChildren();list.classList.add('hidden');message('camera-message','Searching this local network for ONVIF cameras...');try{const response=await fetch('/api/setup/discover',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),data=await response.json();if(!response.ok)throw new Error(data.error||'Camera discovery failed');if(!data.cameras.length){message('camera-message','No ONVIF cameras found. You can still enter the RTSP URL manually.');return}data.cameras.forEach(camera=>{const card=document.createElement('div');card.className='camera-card';const detail=document.createElement('div'),name=document.createElement('strong'),host=document.createElement('small'),use=document.createElement('button');name.textContent=camera.name;host.textContent=camera.host;detail.append(name,host);use.className='btn secondary';use.type='button';use.textContent='Use camera';use.onclick=()=>chooseDiscovered(camera,card);card.append(detail,use);list.append(card)});list.classList.remove('hidden');message('camera-message',`${data.cameras.length} camera${data.cameras.length===1?'':'s'} found. Choose one and sign in.`,true)}catch(error){message('camera-message',error.message)}finally{button.disabled=false;button.textContent='Find cameras'}};
+
+$('onvif-connect').onclick=async()=>{const button=$('onvif-connect');if(!$('onvif-user').value.trim()){message('camera-message','Enter the camera username and password.');return}button.disabled=true;message('camera-message','Asking the camera for its stream address...');try{const response=await fetch('/api/setup/onvif-connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:cameraDeviceIdentity,username:$('onvif-user').value,password:$('onvif-password').value})});const data=await response.json();if(!response.ok)throw new Error(data.error||'The camera could not be connected');await usePreview(data);message('camera-message',`Connected to ${data.stream_uri} - ${data.width} x ${data.height}`,true)}catch(error){message('camera-message',error.message)}finally{button.disabled=false}};
+
+$('test-camera').onclick=async()=>{const button=$('test-camera');button.disabled=true;message('camera-message','Connecting to camera...');try{const response=await fetch('/api/setup/camera-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:$('source').value,camera_device_identity:cameraDeviceIdentity})});const data=await response.json();if(!response.ok)throw new Error(data.error||'Camera test failed');await usePreview(data);message('camera-message',`Connected - ${data.width} x ${data.height}`,true)}catch(error){message('camera-message',error.message)}finally{button.disabled=false}};
 document.querySelectorAll('[data-zone]').forEach(button=>button.onclick=()=>{activeZone=button.dataset.zone;document.querySelectorAll('[data-zone]').forEach(item=>item.classList.toggle('active',item===button))});
 const canvas=$('zones'),ctx=canvas.getContext('2d');function sizeCanvas(){canvas.width=$('preview').naturalWidth;canvas.height=$('preview').naturalHeight;draw()}
 function drawPolygon(points,color){if(!points.length)return;ctx.beginPath();points.forEach((point,index)=>(index?ctx.lineTo(...point):ctx.moveTo(...point)));if(points.length>=3){ctx.closePath();ctx.fillStyle=color+'36';ctx.fill()}ctx.strokeStyle=color;ctx.lineWidth=Math.max(3,canvas.width/300);ctx.stroke();points.forEach(([x,y])=>{ctx.beginPath();ctx.arc(x,y,Math.max(5,canvas.width/150),0,Math.PI*2);ctx.fillStyle=color;ctx.fill()})}
@@ -29,4 +366,6 @@ canvas.onclick=event=>{const rect=canvas.getBoundingClientRect(),x=(event.client
 $('undo').onclick=()=>{zones[activeZone].pop();draw()};$('clear').onclick=()=>{zones.pickup=[];zones.customer=[];draw()};window.addEventListener('resize',draw);
 $('save-setup').onclick=async()=>{if(zones.pickup.length<3||zones.customer.length<3){message('zone-message','Draw at least three points for both zones.');return}const normalize=points=>points.map(([x,y])=>[Number((x/canvas.width).toFixed(6)),Number((y/canvas.height).toFixed(6))]);const button=$('save-setup');button.disabled=true;message('zone-message','Saving secure camera setup...');try{const response=await fetch('/api/setup/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preview_token:previewToken,shop_name:$('shop').value,camera_name:$('camera-name').value,camera_id:$('camera-id').value,pickup_zone:normalize(zones.pickup),customer_zone:normalize(zones.customer)})});const data=await response.json();if(!response.ok)throw new Error(data.error||'Setup could not be saved');$('summary-shop').textContent=data.shop_name;$('summary-camera').textContent=data.camera_name;$('summary-device').textContent=data.device_id;$('summary-binding').textContent=data.binding_state==='local_only'?'Local only':'Connected';show(4)}catch(error){message('zone-message',error.message)}finally{button.disabled=false}};
 $('open-dashboard').onclick=()=>location.href='/';
-</script></body></html>
+</script>
+</body>
+</html>

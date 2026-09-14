@@ -26,6 +26,7 @@ from ..domain import (
     IceCreamHandoverFSM,
     ReleaseAwareDepositFSM,
 )
+from ..compute import clamp_analysis_fps, describe_compute
 from ..inference import (
     RFDETRLocalAdapter,
     ProximityTrackerAdapter,
@@ -327,8 +328,26 @@ def run_service(
     evidence_root = artifact_root / "evidence"
     artifact_root.mkdir(parents=True, exist_ok=True)
 
+    compute = describe_compute(camera_config.device)
+    for warning in compute.warnings:
+        LOGGER.warning("compute: %s", warning)
+    # A CPU forward pass cannot keep up with a GPU-tuned rate, so analysing at the
+    # configured rate would queue frames faster than they drain and push evidence
+    # timestamps behind the camera clock.
+    analysis_fps = clamp_analysis_fps(camera_config.analysis_fps, compute.device)
+    if analysis_fps < camera_config.analysis_fps:
+        LOGGER.warning(
+            "analysis_fps reduced from %.2f to %.2f for %s inference",
+            camera_config.analysis_fps,
+            analysis_fps,
+            compute.device,
+        )
+    LOGGER.info("inference device: %s", compute.headline)
+
     detector = RFDETRLocalAdapter(
-        Path(checkpoint_manifest_path), expected_classes=manifest.classes
+        Path(checkpoint_manifest_path),
+        device=camera_config.device,
+        expected_classes=manifest.classes,
     )
     if pipeline == "handover":
         handover_confidence = (
@@ -392,7 +411,7 @@ def run_service(
         )
     else:
         tracker = SupervisionByteTrackAdapter(
-            frame_rate=camera_config.analysis_fps,
+            frame_rate=analysis_fps,
             confidence_threshold=detector.manifest.confidence_threshold,
         )
         event_engine = ReleaseAwareDepositFSM(
@@ -577,7 +596,7 @@ def run_service(
                         break
                     if packet.timestamp_seconds + 1e-9 < next_media_sample:
                         continue
-                    next_media_sample = packet.timestamp_seconds + 1.0 / camera_config.analysis_fps
+                    next_media_sample = packet.timestamp_seconds + 1.0 / analysis_fps
                 else:
                     packet = reader.read(
                         sequence,
@@ -590,7 +609,7 @@ def run_service(
                         health.report("capture", HealthState.DEGRADED, reader.health.detail)
                         continue
                     now = time.monotonic()
-                    if now - last_live_inference < 1.0 / camera_config.analysis_fps:
+                    if now - last_live_inference < 1.0 / analysis_fps:
                         last_inference_completed = time.monotonic()
                         sequence = packet.sequence
                         continue
@@ -636,7 +655,7 @@ def run_service(
                 if (
                     reader.health.frames_received >= 5
                     and stream_fps > 0
-                    and stream_fps < camera_config.analysis_fps * camera_config.quality.minimum_fps_ratio
+                    and stream_fps < analysis_fps * camera_config.quality.minimum_fps_ratio
                 ):
                     metrics.increment("frames_quality_rejected_total")
                     health.report(
@@ -645,7 +664,7 @@ def run_service(
                         "camera FPS is below the approved minimum",
                         details={
                             "actual_fps": stream_fps,
-                            "minimum_fps": camera_config.analysis_fps * camera_config.quality.minimum_fps_ratio,
+                            "minimum_fps": analysis_fps * camera_config.quality.minimum_fps_ratio,
                         },
                     )
                     last_inference_completed = time.monotonic()

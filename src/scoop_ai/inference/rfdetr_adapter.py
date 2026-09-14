@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 from .checkpoint_manifest import CheckpointManifest, load_checkpoint_manifest
 from .checkpoint_manifest import CANONICAL_CLASSES
+from ..compute import configure_torch_threads, normalise_preference, resolve_device
 from .interfaces import Detection
 
 
@@ -39,13 +40,17 @@ class RFDETRLocalAdapter:
         )
         if confidence_threshold is not None and not 0 <= confidence_threshold <= 1:
             raise ValueError("confidence_threshold must be between 0 and 1")
-        self.device = device
+        # ``device`` accepts an explicit Torch device or a preference such as
+        # "auto"; the preference is only resolved when the model is loaded, so a
+        # machine without Torch can still construct and validate the adapter.
+        self.device = None if device is None else normalise_preference(device, "device")
         self.confidence_threshold = (
             self.manifest.confidence_threshold
             if confidence_threshold is None
             else confidence_threshold
         )
         self._model: Any | None = None
+        self.selected_device: str | None = None
 
     @property
     def loaded(self) -> bool:
@@ -56,7 +61,6 @@ class RFDETRLocalAdapter:
             return self._model
         # Heavy libraries are intentionally lazy so validation, APIs, and test
         # tooling remain usable on machines without a GPU runtime.
-        import torch
         from rfdetr import RFDETRLarge, RFDETRMedium, RFDETRNano, RFDETRSmall
 
         model_classes = {
@@ -66,7 +70,9 @@ class RFDETRLocalAdapter:
             "large": RFDETRLarge,
         }
         checkpoint_path = self.manifest_path.parent / self.manifest.checkpoint_file
-        selected_device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        selected_device = resolve_device(self.device or "auto")
+        configure_torch_threads(selected_device)
+        self.selected_device = selected_device
         self._model = model_classes[self.manifest.architecture](
             device=selected_device,
             pretrain_weights=str(checkpoint_path),

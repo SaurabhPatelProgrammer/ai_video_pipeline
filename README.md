@@ -56,8 +56,41 @@ paths.
 
 - Windows 10 or 11;
 - Python 3.11 (the project requires `>=3.11,<3.12`);
-- an NVIDIA driver and GPU for practical model inference;
+- an NVIDIA driver and GPU, or a 4-core-or-better CPU (see [Compute targets](#compute-targets));
 - a reachable webcam, RTSP camera, HTTP stream, or recorded video file.
+
+## Compute targets
+
+The client runs on GPU and CPU machines from the same bundle. `camera.device`
+selects the target: `auto` (default) uses the GPU when a working NVIDIA runtime
+is present and falls back to the CPU otherwise, and `cuda` or `cpu` pin it.
+A pinned `cuda` on a machine without a GPU logs a warning and still runs on the
+CPU rather than refusing to start.
+
+Report what a machine will actually use:
+
+```powershell
+.\.venv\Scripts\scoop-ai.exe compute-check
+.\.venv\Scripts\scoop-ai.exe compute-check --device cpu --json
+```
+
+Measured RF-DETR nano latency at 1280x720 (RTX 3050 laptop GPU, 12-thread CPU):
+
+| Target | First frame | Steady state | Sustainable rate |
+| ------ | ----------- | ------------ | ---------------- |
+| GPU    | 12.5 s      | 96 ms        | ~10 fps          |
+| CPU    | 6.5 s       | 212 ms       | ~4.7 fps         |
+
+Because the analysis rate must leave headroom for capture, the quality gate, and
+evidence writes — on shop hardware weaker than a development machine — the
+service caps analysis at 10 fps on GPU and 2 fps on CPU, and logs when it lowers
+a configured rate. CPU inference also reserves one core so capture and the user
+interface stay responsive. A handover takes well over a second, so 2 fps still
+samples each one several times.
+
+Do not raise `camera.analysis_fps` above these ceilings on a CPU machine; frames
+would queue faster than they drain and evidence timestamps would drift behind the
+camera clock.
 
 ## Installation
 
@@ -71,8 +104,9 @@ Copy-Item .env.example .env
 ```
 
 The setup script installs the selected PyTorch build, project dependencies, and
-the editable `scoop-ai` package. CUDA 13.0 is the default; use `-Compute cu128`
-or `-Compute cpu` when appropriate.
+the editable `scoop-ai` package. It probes for an NVIDIA driver and installs the
+CUDA 13.0 runtime when one is present, or the CPU runtime when it is not. Use
+`-Compute cu130`, `-Compute cu128`, or `-Compute cpu` to override the probe.
 
 After `git lfs pull`, the deployable detector must exist at:
 
@@ -243,25 +277,82 @@ configured for pytest in CI:
 .\.venv\Scripts\python.exe -m compileall -q src tests scripts
 ```
 
-## Local operator dashboard
+## Desktop application
 
-Run the loopback-only browser dashboard on the shop computer:
+The client is a desktop application. Launching it opens a native window — no
+browser, address bar, or URL — with the operator dashboard rendered inside it:
+
+```powershell
+.\desktop.ps1
+.\desktop.ps1 -SoftwareRendering   # Remote Desktop or a machine without a display GPU
+```
+
+`setup.ps1` creates a **Scoop AI** desktop shortcut and a startup entry that
+launches minimised to the notification area. Use `-SkipDashboardShortcut` on
+developer machines that do not need them.
+
+The window provides three pages, reached from the sidebar:
+
+- **Today** — daily candidate totals, service and compute status, and evidence
+  review with accept/reject decisions and item-quantity correction;
+- **Camera** — a live view of the configured camera with the calibrated pickup
+  and customer zones drawn over it, the saved configuration, and a deliberate
+  route back into the setup wizard;
+- **System** — inference device, PyTorch build, analysis-rate ceiling, and the
+  local data, database, and evidence paths.
+
+Until a camera is configured, every route leads to the setup wizard: shop
+details, credential-backed camera connection, a still preview, and visual
+pickup/customer zone calibration.
+
+Network discovery finds ONVIF cameras and then asks the chosen camera, over
+ONVIF, for its own RTSP address. The operator supplies only the camera username
+and password; the vendor's stream path is never guessed, because a guessed path
+produces a URL that cannot connect. The password is used inside the service to
+authenticate and open the stream, and is written to Windows Credential Manager
+— it is never returned to the page, logged, or stored in configuration. Manual
+RTSP entry remains available for cameras without ONVIF, and both fields can be
+revealed to check what was typed. After that the wizard is only reached
+explicitly, through **Re-run camera setup** on the Camera page — a configured
+camera is never sent back through onboarding.
+
+The notification-area icon starts and stops monitoring without opening the
+window.
+
+### Live view and camera load
+
+The Camera page holds one capture open and serves whichever frame arrived last,
+so a viewer polling several times a second costs almost nothing. Opening the
+stream takes a few seconds on a network camera; every frame after that is served
+from memory. The capture is released a few seconds after the last request, so
+closing or pausing the page hands the camera back.
+
+The live view is a second connection to the camera. Most cameras accept several,
+but a camera limited to one stream will refuse the preview while monitoring is
+running, and the page says so rather than failing silently. Pause the live view
+or stop monitoring in that case.
+
+Closing the window hides it to the notification area so monitoring keeps
+running; **Quit** from the tray menu stops monitoring and exits. Launching the
+shortcut a second time raises the running window instead of starting a second
+copy. The embedded view refuses to navigate anywhere except the loopback client,
+so evidence cannot be steered off-box by a page defect.
+
+The dashboard reads the same local SQLite database and evidence directory as the
+Windows edge service; camera video and event data are not uploaded. Client data
+remains under `D:\ip-camera-ai-data` by default.
+
+### Browser dashboard
+
+The loopback browser dashboard remains available for support and for machines
+that cannot host the embedded window:
 
 ```powershell
 .\dashboard.ps1
 ```
 
-It opens `http://127.0.0.1:8090` and provides daily candidate totals, service
-status, evidence review, accept/reject decisions, and item-quantity correction.
-The dashboard reads the same local SQLite database and evidence directory as
-the Windows edge service; camera video and event data are not uploaded.
-`setup.ps1` also creates a **Scoop AI Dashboard** desktop shortcut by default;
-use `-SkipDashboardShortcut` on developer machines that do not need it.
-
-On first launch, the client opens a guided setup wizard for shop details,
-credential-backed camera connection, live preview, and visual pickup/customer
-zone calibration. After setup, monitoring can be started or stopped from the
-dashboard. Client data remains under `D:\ip-camera-ai-data` by default.
+It serves `http://127.0.0.1:8090` with the same interface. The desktop launcher
+falls back to it automatically if QtWebEngine is unavailable.
 
 ## Windows client installer
 
@@ -273,7 +364,8 @@ Windows installer:
 ```
 
 The installer output is written under `dist\installer`. It creates a desktop
-shortcut and a background startup entry. Tagged releases and manual runs of
+shortcut that opens the desktop window and a startup entry that launches it
+minimised to the notification area. Tagged releases and manual runs of
 the `Windows installer` GitHub Actions workflow build the same artifact.
 
 Normal builds are development/pilot artifacts and also write

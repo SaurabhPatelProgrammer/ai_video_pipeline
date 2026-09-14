@@ -37,7 +37,7 @@ where = ["src"]
 include = ["scoop_ai*"]
 
 [tool.setuptools.package-data]
-"scoop_ai.dashboard" = ["static/*.html"]
+"scoop_ai.dashboard" = ["static/*.html", "static/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

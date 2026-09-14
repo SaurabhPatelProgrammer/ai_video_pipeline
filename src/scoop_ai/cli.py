@@ -14,6 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .capture import LiveFrameSource, RecordedFrameSource
+from .compute import DEVICE_PREFERENCES, describe_compute
 from .config import ConfigurationError, load_camera_config
 from .security import resolve_credential, store_credential
 from .storage import (
@@ -59,6 +60,31 @@ def _parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--port", type=int, default=8090)
     dashboard.add_argument("--no-browser", action="store_true")
     dashboard.set_defaults(handler=_dashboard)
+
+    desktop = subparsers.add_parser(
+        "desktop", help="Run the complete local Scoop AI client in a desktop window"
+    )
+    desktop.add_argument("--product-root", type=Path, required=True)
+    desktop.add_argument("--checkpoint-manifest", type=Path, required=True)
+    desktop.add_argument("--port", type=int, default=8090)
+    desktop.add_argument(
+        "--software-rendering",
+        action="store_true",
+        help="Render without the display GPU (use over Remote Desktop)",
+    )
+    desktop.add_argument(
+        "--start-hidden",
+        action="store_true",
+        help="Start minimised to the notification area",
+    )
+    desktop.set_defaults(handler=_desktop)
+
+    compute = subparsers.add_parser(
+        "compute-check", help="Report whether this machine will use the GPU or the CPU"
+    )
+    compute.add_argument("--device", default="auto", choices=list(DEVICE_PREFERENCES))
+    compute.add_argument("--json", action="store_true", dest="as_json")
+    compute.set_defaults(handler=_compute_check)
 
     product = subparsers.add_parser("product", help="Run the complete local Scoop AI client")
     product.add_argument("--product-root", type=Path, required=True)
@@ -453,6 +479,40 @@ def _product(args: argparse.Namespace) -> int:
         port=args.port,
         open_browser=not args.no_browser,
     )
+
+
+def _desktop(args: argparse.Namespace) -> int:
+    from .desktop import DesktopLaunchError, run_desktop
+
+    try:
+        return run_desktop(
+            args.product_root,
+            args.checkpoint_manifest,
+            port=args.port,
+            software_rendering=args.software_rendering,
+            start_hidden=args.start_hidden,
+        )
+    except DesktopLaunchError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+def _compute_check(args: argparse.Namespace) -> int:
+    capability = describe_compute(args.device)
+    if args.as_json:
+        print(json.dumps(capability.as_payload(), indent=2, sort_keys=True))
+    else:
+        print(capability.headline)
+        print(f"  device            : {capability.device}")
+        print(f"  PyTorch           : {capability.torch_version or 'not installed'}")
+        print(f"  CUDA runtime      : {capability.cuda_version or 'not available'}")
+        if capability.total_memory_bytes:
+            print(f"  GPU memory        : {capability.total_memory_bytes / 1e9:.1f} GB")
+        print(f"  logical CPUs      : {capability.cpu_threads}")
+        print(f"  recommended fps   : {capability.recommended_analysis_fps:g}")
+        for warning in capability.warnings:
+            print(f"  ! {warning}")
+    return 0 if capability.torch_error is None else 1
 
 
 def _service(args: argparse.Namespace) -> int:

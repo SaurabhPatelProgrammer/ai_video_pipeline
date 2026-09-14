@@ -5,7 +5,12 @@ from PyInstaller.utils.hooks import collect_data_files
 project = Path(SPECPATH).resolve().parent
 datas = collect_data_files("scoop_ai")
 binaries = []
-hiddenimports = ["keyring.backends.Windows"]
+hiddenimports = [
+    "keyring.backends.Windows",
+    "PySide6.QtWebEngineCore",
+    "PySide6.QtWebEngineWidgets",
+    "PySide6.QtNetwork",
+]
 datas += [
     (
         str(project / "models" / "ice-cream-item-rfdetr-nano-v2" / "model-manifest.json"),
@@ -29,7 +34,20 @@ a = Analysis(
     excludes=[
         "pytest",
         "ruff",
-        "PySide6",
+        # PySide6 now ships: the client's main window is the desktop shell. Only
+        # the Qt modules it never touches are pruned, to keep the bundle small.
+        "PySide6.Qt3DAnimation",
+        "PySide6.Qt3DCore",
+        "PySide6.Qt3DExtras",
+        "PySide6.Qt3DInput",
+        "PySide6.Qt3DLogic",
+        "PySide6.Qt3DRender",
+        "PySide6.QtCharts",
+        "PySide6.QtDataVisualization",
+        "PySide6.QtMultimedia",
+        "PySide6.QtQuick3D",
+        "PySide6.QtSql",
+        "PySide6.QtTest",
         "pytorch_lightning",
         "lightning",
         "wandb",

@@ -1,12 +1,33 @@
 param(
-    [ValidateSet("cu130", "cu128", "cpu")]
-    [string]$Compute = "cu130",
+    [ValidateSet("auto", "cu130", "cu128", "cpu")]
+    [string]$Compute = "auto",
     [switch]$SkipDashboardShortcut
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $ProjectRoot
+
+if ($Compute -eq "auto") {
+    # Installing a CUDA build on a machine with no NVIDIA driver downloads
+    # gigabytes that can never be used, so probe the driver before choosing.
+    $HasNvidia = $false
+    try {
+        $null = & nvidia-smi -L 2>$null
+        $HasNvidia = ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        $HasNvidia = $false
+    }
+    if ($HasNvidia) {
+        $Compute = "cu130"
+        Write-Host "NVIDIA GPU detected. Installing the CUDA 13.0 runtime."
+    }
+    else {
+        $Compute = "cpu"
+        Write-Host "No NVIDIA GPU detected. Installing the CPU runtime; inference will be slower."
+    }
+}
 
 $Python311 = $null
 try {
@@ -60,6 +81,7 @@ if (-not $SkipDashboardShortcut) {
     & (Join-Path $ProjectRoot "install-dashboard-shortcut.ps1")
     if ($LASTEXITCODE -ne 0) { throw "Dashboard shortcut could not be created." }
 }
+& $PythonExe -m scoop_ai.cli compute-check
 Write-Host ""
-Write-Host "Setup complete. Use the Scoop AI Dashboard desktop shortcut after provisioning the camera."
+Write-Host "Setup complete. Use the Scoop AI desktop shortcut after provisioning the camera."
 Write-Host "Provision the camera with 'scoop-ai credential-set', then validate it with 'scoop-ai camera-check'."

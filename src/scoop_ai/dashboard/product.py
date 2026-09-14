@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -19,11 +20,17 @@ import cv2
 import numpy as np
 
 from ..calibration import create_reference_fingerprint, validate_zone
+from ..compute import clamp_analysis_fps, describe_compute
 from ..config import load_camera_config, load_service_config
 from ..inference.checkpoint_manifest import load_checkpoint_manifest
-from ..security import safe_source_name, store_credential
+from ..security import resolve_credential, safe_source_name, store_credential
 from ..storage import AuditLogRecord, SQLiteEventRepository, utc_now_iso
-from .discovery import DiscoveredCamera, discover_onvif_cameras
+from .discovery import (
+    DiscoveredCamera,
+    discover_onvif_cameras,
+    fetch_stream_uri,
+    with_credentials,
+)
 
 
 CAMERA_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
@@ -63,6 +70,125 @@ class PreviewSession:
     camera_device_identity: str | None = None
 
 
+class LivePreview:
+    """Keep one capture open and hand out its newest frame on demand.
+
+    Reopening an RTSP stream per request is not viable: the handshake alone costs
+    seconds. Instead a single reader thread holds the connection and callers read
+    whatever arrived last, so a viewer polling several times a second is cheap.
+    The thread stops itself once nobody has asked for a frame recently, which is
+    what keeps a forgotten window from holding the camera open all day.
+    """
+
+    IDLE_TIMEOUT_SECONDS = 12.0
+    OPEN_TIMEOUT_MS = 5000
+    READ_TIMEOUT_MS = 5000
+    JPEG_QUALITY = 80
+
+    def __init__(
+        self,
+        source_resolver: Callable[[], int | str],
+        *,
+        capture_opener: Callable[[int | str], "cv2.VideoCapture"] | None = None,
+    ) -> None:
+        self._resolve = source_resolver
+        self._open = capture_opener or self._default_opener
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._frame: bytes | None = None
+        self._dimensions: tuple[int, int] | None = None
+        self._error: str | None = None
+        self._last_access = 0.0
+        self._stop = threading.Event()
+
+    @staticmethod
+    def _default_opener(source: int | str) -> "cv2.VideoCapture":
+        capture = cv2.VideoCapture()
+        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, LivePreview.OPEN_TIMEOUT_MS)
+        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, LivePreview.READ_TIMEOUT_MS)
+        capture.open(source)
+        return capture
+
+    def _run(self) -> None:
+        capture = None
+        try:
+            source = self._resolve()
+            capture = self._open(source)
+            if not capture.isOpened():
+                with self._lock:
+                    self._error = (
+                        "The camera did not accept a preview connection. If monitoring "
+                        "is running, this camera may allow only one stream at a time."
+                    )
+                return
+            while not self._stop.is_set():
+                with self._lock:
+                    if time.monotonic() - self._last_access > self.IDLE_TIMEOUT_SECONDS:
+                        break
+                ok, frame = capture.read()
+                if not ok or frame is None or not frame.size:
+                    with self._lock:
+                        self._error = "The camera stopped returning frames."
+                    break
+                encoded, buffer = cv2.imencode(
+                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.JPEG_QUALITY]
+                )
+                if not encoded:
+                    continue
+                with self._lock:
+                    self._frame = buffer.tobytes()
+                    self._dimensions = (int(frame.shape[1]), int(frame.shape[0]))
+                    self._error = None
+        except Exception as exc:  # a preview must never take the dashboard down
+            with self._lock:
+                self._error = f"The camera preview failed: {exc}"
+        finally:
+            if capture is not None:
+                capture.release()
+            with self._lock:
+                self._thread = None
+                self._frame = None
+
+    def _ensure_running(self) -> None:
+        with self._lock:
+            self._last_access = time.monotonic()
+            if self._thread is not None:
+                return
+            self._stop.clear()
+            self._error = None
+            self._thread = threading.Thread(
+                target=self._run, name="scoop-live-preview", daemon=True
+            )
+            thread = self._thread
+        thread.start()
+
+    def snapshot(self, wait_seconds: float = 6.0) -> tuple[bytes, tuple[int, int]]:
+        """Return the newest JPEG, starting the reader and waiting for a first frame."""
+
+        self._ensure_running()
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            with self._lock:
+                self._last_access = time.monotonic()
+                if self._frame is not None:
+                    assert self._dimensions is not None
+                    return self._frame, self._dimensions
+                error = self._error
+                running = self._thread is not None
+            if error is not None:
+                raise ValueError(error)
+            if not running or time.monotonic() > deadline:
+                raise ValueError("The camera did not deliver a preview frame in time.")
+            time.sleep(0.05)
+
+    def stop(self) -> None:
+        self._stop.set()
+        with self._lock:
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout=6)
+
+
 def _atomic_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -83,6 +209,58 @@ def _toml_string(value: str | Path) -> str:
 
 def _zone_text(points: tuple[tuple[float, float], ...]) -> str:
     return "[" + ", ".join(f"[{x:.6f}, {y:.6f}]" for x, y in points) + "]"
+
+
+def _kill_children_with_parent() -> object | None:
+    """Return a Windows job object that kills its members when this process dies.
+
+    Without it, terminating the client â€” a crash, Task Manager, a power cut â€”
+    leaves the monitoring service running: it keeps the camera open and keeps
+    writing events, and the next launch starts a second one alongside it. A job
+    object with KILL_ON_JOB_CLOSE makes the operating system clean up instead,
+    because the handle closes however the parent dies.
+    """
+
+    if os.name != "nt":
+        return None
+    try:
+        import win32job
+    except ImportError:
+        return None
+    try:
+        job = win32job.CreateJobObject(None, "")
+        limits = win32job.QueryInformationJobObject(
+            job, win32job.JobObjectExtendedLimitInformation
+        )
+        limits["BasicLimitInformation"]["LimitFlags"] |= (
+            win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        )
+        win32job.SetInformationJobObject(
+            job, win32job.JobObjectExtendedLimitInformation, limits
+        )
+        return job
+    except Exception:
+        return None
+
+
+def _adopt_into_job(job: object, pid: int) -> None:
+    if job is None:
+        return
+    try:
+        import win32api
+        import win32con
+        import win32job
+
+        handle = win32api.OpenProcess(
+            win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE, False, pid
+        )
+        try:
+            win32job.AssignProcessToJobObject(job, handle)
+        finally:
+            win32api.CloseHandle(handle)
+    except Exception:
+        # Losing automatic cleanup is not a reason to refuse to monitor.
+        return
 
 
 class ProductManager:
@@ -106,7 +284,78 @@ class ProductManager:
         self._discoveries: dict[str, DiscoveredCamera] = {}
         self._lock = threading.RLock()
         self._monitor: subprocess.Popen[bytes] | None = None
+        self._live = LivePreview(self._configured_source)
+        self._job = _kill_children_with_parent()
         self._ensure_identity()
+
+    def _service_already_running(self) -> bool:
+        """Detect a monitoring service this manager does not own.
+
+        One survivor from a previous crash would otherwise be joined by a second
+        service on the same camera and database, so both write events for every
+        handover.
+        """
+
+        if not self.paths.service_config.is_file():
+            return False
+        try:
+            service = load_service_config(self.paths.service_config)
+        except (OSError, ValueError):
+            return False
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            return probe.connect_ex((service.health_host, service.health_port)) == 0
+
+    def _configured_source(self) -> int | str:
+        """Resolve the saved camera through the OS credential store."""
+
+        return load_camera_config(self.paths.camera_config).resolve_source(
+            credential_resolver=resolve_credential
+        )
+
+    def live_snapshot(self) -> tuple[bytes, tuple[int, int]]:
+        if not self.configured:
+            raise ValueError("finish camera setup before opening the live view")
+        return self._live.snapshot()
+
+    def camera_settings(self) -> dict[str, object]:
+        """Describe the saved camera so the operator can check it without the wizard."""
+
+        if not self.configured:
+            raise ValueError("this camera is not configured yet")
+        camera = load_camera_config(self.paths.camera_config)
+        settings: dict[str, object] = {}
+        try:
+            loaded = json.loads(self.paths.settings.read_text(encoding="utf-8"))
+            settings = loaded if isinstance(loaded, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            settings = {}
+        calibration: dict[str, object] = {}
+        try:
+            loaded = json.loads(self.paths.calibration.read_text(encoding="utf-8"))
+            calibration = loaded if isinstance(loaded, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            calibration = {}
+        details = calibration.get("calibration")
+        details = details if isinstance(details, dict) else {}
+        return {
+            "camera_id": camera.camera_id,
+            "camera_name": settings.get("camera_name"),
+            "shop_name": settings.get("shop_name"),
+            "pipeline": camera.pipeline,
+            "device": camera.device,
+            "analysis_fps": camera.analysis_fps,
+            "expected_width": camera.expected_width,
+            "expected_height": camera.expected_height,
+            "model_version": settings.get("model_version"),
+            "configured_at": settings.get("configured_at"),
+            "calibrated_at": details.get("calibrated_at_utc"),
+            "source_name": details.get("source_name"),
+            "monitoring": self.monitoring,
+            # Normalised polygons, so the page can overlay them on any frame size.
+            "pickup_zone": [list(point) for point in (camera.tub_zone or ())],
+            "customer_zone": [list(point) for point in (camera.serving_zone or ())],
+        }
 
     def _ensure_identity(self) -> dict[str, object]:
         if self.paths.identity.is_file():
@@ -185,6 +434,60 @@ class ProductManager:
                 if camera_device_identity not in self._discoveries:
                     raise ValueError("selected camera discovery expired; scan the network again")
         parsed_source: int | str = int(source) if source.isdigit() else source
+        return self._capture_preview(
+            source,
+            parsed_source,
+            camera_device_identity=camera_device_identity,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def connect_discovered_camera(
+        self,
+        device_id: str,
+        username: str,
+        password: str,
+        *,
+        timeout_seconds: float = 12.0,
+    ) -> dict[str, object]:
+        """Ask a discovered camera for its own stream address, then open it.
+
+        Vendors use different RTSP paths, so guessing one produces a URL that
+        cannot connect. The camera is authoritative about its own address; the
+        operator only needs the username and password they already have. The
+        password never leaves this process: the caller receives a preview token
+        and a credential-free address for display.
+        """
+
+        username = username.strip()
+        if not username or len(username) > 128 or len(password) > 256:
+            raise ValueError("a camera username and password are required")
+        with self._lock:
+            camera = self._discoveries.get(device_id)
+        if camera is None:
+            raise ValueError("selected camera discovery expired; scan the network again")
+        uri = fetch_stream_uri(
+            camera.service_url, username=username, password=password
+        )
+        source = with_credentials(uri, username, password)
+        result = self._capture_preview(
+            source,
+            source,
+            camera_device_identity=device_id,
+            timeout_seconds=timeout_seconds,
+        )
+        # The camera-reported address, so the operator can confirm the path the
+        # camera chose without ever seeing the password again.
+        result["stream_uri"] = safe_source_name(uri)
+        return result
+
+    def _capture_preview(
+        self,
+        source: str,
+        parsed_source: int | str,
+        *,
+        camera_device_identity: str | None,
+        timeout_seconds: float,
+    ) -> dict[str, object]:
         capture = cv2.VideoCapture()
         capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
         capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
@@ -268,6 +571,9 @@ class ProductManager:
             raise ValueError("pickup and customer zones overlap too much")
         if self.monitoring:
             self.stop_monitoring()
+        # A running preview still holds the previous camera; release it before the
+        # configuration it was resolved from is replaced.
+        self._live.stop()
         manifest = load_checkpoint_manifest(
             self.checkpoint_manifest, expected_classes=("ice_cream_item",), verify_checkpoint=True
         )
@@ -322,13 +628,19 @@ read_timeout_ms = 5000
 read_wait_seconds = 2.0
 rtsp_transport = "tcp"
 '''
+        # The wizard writes a rate this machine can sustain. "auto" keeps the
+        # service on the GPU when one is present and falls back cleanly when the
+        # shop computer has none.
+        compute = describe_compute()
+        analysis_fps = clamp_analysis_fps(6.0, compute.device)
         camera_toml = f'''[camera]
 camera_id = {_toml_string(camera_id)}
 enabled = true
 mode = "live"
 pipeline = "handover"
+device = "auto"
 credential_key = {_toml_string(credential_key)}
-analysis_fps = 6.0
+analysis_fps = {analysis_fps:g}
 calibration_profile = {_toml_string(self.paths.calibration)}
 expected_width = {int(preview.frame.shape[1])}
 expected_height = {int(preview.frame.shape[0])}
@@ -379,6 +691,8 @@ customer_only_static_minimum_observations = 6
             "camera_device_identity": preview.camera_device_identity,
             "model_version": manifest.model_version,
             "checkpoint_manifest": str(self.checkpoint_manifest),
+            "analysis_fps": analysis_fps,
+            "configured_compute": compute.device,
             "pilot_mode": True,
             "auto_start_monitoring": True,
             "configured_at": utc_now_iso(),
@@ -403,6 +717,11 @@ customer_only_static_minimum_observations = 6
         with self._lock:
             if self.monitoring:
                 return self.status()
+            if self._service_already_running():
+                raise ValueError(
+                    "A monitoring service is already running for this camera. "
+                    "It may have survived a previous crash; close it before starting another."
+                )
             command = [sys.executable]
             if getattr(sys, "frozen", False):
                 command.append("--run-service")
@@ -415,7 +734,8 @@ customer_only_static_minimum_observations = 6
             ])
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             self._monitor = self.process_factory(command, cwd=str(self.paths.root), creationflags=flags)
-        return self.status()
+            _adopt_into_job(self._job, self._monitor.pid)
+            # Detect immediate child-service startup failures so the UI cannot report a dead service as active.`r`n            time.sleep(0.25)`r`n            if self._monitor.poll() is not None:`r`n                self._monitor = None`r`n                raise RuntimeError("Monitoring service stopped during startup. Check camera resolution, model compatibility, and service configuration.")`r`n        return self.status()
 
     def stop_monitoring(self) -> dict[str, object]:
         with self._lock:
@@ -443,4 +763,5 @@ customer_only_static_minimum_observations = 6
     def close(self) -> None:
         # The monitoring subprocess intentionally survives dashboard restarts only
         # when hosted by the installed Windows service. In shortcut mode, stop it.
+        self._live.stop()
         self.stop_monitoring()

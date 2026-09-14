@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scoop AI &mdash; Camera</title>
+  <link rel="stylesheet" href="/app.css">
+  <style>
+    .layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, 1fr); gap: 18px; align-items: start; }
+
+    .live {
+      position: relative;
+      background: #0d1110;
+      border: 1px solid var(--line);
+      border-radius: var(--r-lg);
+      overflow: hidden;
+      aspect-ratio: 16 / 9;
+    }
+    .live img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .live svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+    .live-state {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      gap: 8px;
+      padding: 24px;
+      text-align: center;
+      color: #cbd5d1;
+      background: #0d1110;
+      font-size: 13px;
+    }
+    .live-state.hidden { display: none !important; }
+    .live-state strong { font-size: 14px; color: #fff; }
+
+    .live-bar {
+      position: absolute;
+      top: 10px; left: 10px; right: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(8, 14, 12, .74);
+      color: #eef3f1;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11.5px;
+      font-weight: 600;
+      backdrop-filter: blur(6px);
+    }
+    .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: #e0574d; }
+    .badge.live .dot { background: #3ddc97; animation: pulse 1.8s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .35; } }
+    @media (prefers-reduced-motion: reduce) { .badge.live .dot { animation: none; } }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--r-lg);
+      box-shadow: var(--shadow-1);
+      overflow: hidden;
+    }
+    .card h2 {
+      font-size: 13px;
+      font-weight: 650;
+      margin: 0;
+      padding: 12px 15px;
+      border-bottom: 1px solid var(--line);
+    }
+    .card-body { padding: 14px 15px; display: grid; gap: 10px; }
+
+    .row { display: flex; justify-content: space-between; gap: 14px; font-size: 13px; }
+    .row dt { color: var(--text-2); }
+    .row dd { margin: 0; font-weight: 550; text-align: right; word-break: break-word; }
+
+    .legend { display: flex; gap: 14px; margin-top: 12px; font-size: 12.5px; color: var(--text-2); }
+    .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
+
+    .stack { display: grid; gap: 8px; }
+
+    @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<div class="app">
+  <nav class="sidebar" aria-label="Sections">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">S</div>
+      <div>
+        <div class="brand-name">Scoop AI</div>
+        <div class="brand-sub" id="brand-sub">Local serving monitor</div>
+      </div>
+    </div>
+
+    <div class="nav-label">Monitor</div>
+    <a class="nav-item" href="/">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <rect x="1.8" y="2.5" width="12.4" height="11" rx="2"/><path d="M1.8 6.2h12.4M5.6 2.5v3.7"/>
+      </svg>
+      <span>Today</span>
+    </a>
+
+    <div class="nav-label">Configure</div>
+    <a class="nav-item" href="/camera" aria-current="page">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <rect x="1.6" y="4" width="10" height="8" rx="1.8"/><path d="M11.6 7.4l2.8-1.8v4.8l-2.8-1.8z"/>
+      </svg>
+      <span>Camera</span>
+    </a>
+    <a class="nav-item" href="/system">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <circle cx="8" cy="8" r="2.1"/>
+        <path d="M8 1.6v1.7M8 12.7v1.7M14.4 8h-1.7M3.3 8H1.6M12.5 3.5l-1.2 1.2M4.7 11.3l-1.2 1.2M12.5 12.5l-1.2-1.2M4.7 4.7L3.5 3.5"/>
+      </svg>
+      <span>System</span>
+    </a>
+  </nav>
+
+  <main class="main">
+    <header class="page-head">
+      <div>
+        <h1 id="camera-title">Camera</h1>
+        <p>Live view and the calibration this camera is monitoring with.</p>
+      </div>
+      <div class="head-tools">
+        <button class="btn secondary" id="toggle-zones" type="button" aria-pressed="true">Hide zones</button>
+        <button class="btn secondary" id="toggle-live" type="button">Pause live view</button>
+      </div>
+    </header>
+
+    <div class="page-body">
+      <div class="layout">
+        <div>
+          <div class="live">
+            <img id="frame" alt="Live view of the configured camera">
+            <svg id="overlay" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true"></svg>
+            <div class="live-bar"><span class="badge" id="badge"><span class="dot"></span><span id="badge-text">Connecting</span></span></div>
+            <div class="live-state" id="live-state"><strong>Opening the camera</strong><span>This takes a few seconds on a network camera.</span></div>
+          </div>
+          <div class="legend">
+            <span><i class="swatch" style="background:#f4af28"></i>Pickup area</span>
+            <span><i class="swatch" style="background:#42a9e6"></i>Customer area</span>
+          </div>
+        </div>
+
+        <div class="stack">
+          <section class="card">
+            <h2>Configuration</h2>
+            <dl class="card-body" id="settings"></dl>
+          </section>
+
+          <section class="card">
+            <h2>Change this camera</h2>
+            <div class="card-body">
+              <p class="hint" style="margin:0">Re-running setup replaces the camera credential and both zones. Monitoring stops while you do it.</p>
+              <a class="btn secondary" href="/setup" style="justify-self:start">Re-run camera setup</a>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const POLL_MS = 250;          // about 4 frames a second: readable without loading the camera
+let live = true, zonesVisible = true, timer = null, settings = null;
+
+function toast(message) {
+  const node = $('toast');
+  node.textContent = message;
+  node.classList.add('show');
+  clearTimeout(node.dataset.timer);
+  node.dataset.timer = setTimeout(() => node.classList.remove('show'), 2600);
+}
+
+function badge(state, text) {
+  const node = $('badge');
+  node.classList.toggle('live', state === 'live');
+  $('badge-text').textContent = text;
+}
+
+function polygon(points, colour) {
+  if (points.length < 3) return '';
+  const path = points.map(([x, y]) => `${x},${y}`).join(' ');
+  return `<polygon points="${path}" fill="${colour}" fill-opacity="0.20"
+                   stroke="${colour}" stroke-width="0.004" vector-effect="non-scaling-stroke"/>`;
+}
+
+function drawZones() {
+  const overlay = $('overlay');
+  if (!settings || !zonesVisible) { overlay.innerHTML = ''; return; }
+  overlay.innerHTML = polygon(settings.pickup_zone, '#f4af28') + polygon(settings.customer_zone, '#42a9e6');
+}
+
+function rows(entries) {
+  const list = $('settings');
+  list.replaceChildren();
+  for (const [label, value] of entries) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = value;
+    row.append(dt, dd);
+    list.append(row);
+  }
+}
+
+const localTime = value => {
+  if (!value) return 'Unknown';
+  const parsed = new Date(value);
+  return isNaN(parsed) ? String(value) : parsed.toLocaleString();
+};
+
+async function loadSettings() {
+  const response = await fetch('/api/camera/settings');
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'The camera configuration could not be read');
+  settings = data;
+  if (data.shop_name) $('brand-sub').textContent = data.shop_name;
+  $('camera-title').textContent = data.camera_name || 'Camera';
+  const resolution = data.expected_width && data.expected_height
+    ? `${data.expected_width} x ${data.expected_height}` : 'Unknown';
+  rows([
+    ['Camera ID', data.camera_id],
+    // Credential-stripped by the server; the password is never sent here.
+    ['Address', data.source_name || 'Unknown'],
+    ['Monitoring', data.monitoring ? 'Running' : 'Stopped'],
+    ['Detection', data.pipeline === 'handover' ? 'Ice-cream handover' : data.pipeline],
+    ['Compute target', data.device],
+    ['Analysis rate', `${data.analysis_fps} fps`],
+    ['Resolution', resolution],
+    ['Model', data.model_version || 'Unknown'],
+    ['Zones calibrated', localTime(data.calibrated_at)]
+  ]);
+  drawZones();
+}
+
+/* The frame is loaded by assigning src rather than fetching a blob: the page's
+   Content-Security-Policy allows img-src 'self', and a blob: URL is not 'self',
+   so a fetched frame would be blocked before it ever painted. Chaining the next
+   request off load/error also keeps exactly one request in flight. */
+function showLiveError(message) {
+  badge('error', 'No signal');
+  const state = $('live-state');
+  state.classList.remove('hidden');
+  state.replaceChildren();
+  const title = document.createElement('strong');
+  title.textContent = 'Live view unavailable';
+  const detail = document.createElement('span');
+  detail.textContent = message;
+  state.append(title, detail);
+}
+
+async function reportFrameFailure() {
+  // The image element cannot expose why it failed; ask the endpoint directly.
+  try {
+    const response = await fetch('/api/camera/snapshot');
+    const data = await response.json().catch(() => ({}));
+    showLiveError(data.error || 'The camera preview could not be loaded.');
+  } catch (error) {
+    showLiveError('The local Scoop AI service is not responding.');
+  }
+}
+
+function pollFrame() {
+  if (!live) return;
+  $('frame').src = `/api/camera/snapshot?t=${Date.now()}`;
+}
+
+$('frame').addEventListener('load', () => {
+  $('live-state').classList.add('hidden');
+  badge('live', 'Live');
+  if (live) timer = setTimeout(pollFrame, POLL_MS);
+});
+
+$('frame').addEventListener('error', () => {
+  reportFrameFailure();
+  if (live) timer = setTimeout(pollFrame, 2000);
+});
+
+$('toggle-live').onclick = () => {
+  live = !live;
+  $('toggle-live').textContent = live ? 'Pause live view' : 'Resume live view';
+  if (live) {
+    badge('', 'Connecting');
+    pollFrame();
+  } else {
+    clearTimeout(timer);
+    badge('', 'Paused');
+    toast('Live view paused; the camera connection closes shortly');
+  }
+};
+
+$('toggle-zones').onclick = () => {
+  zonesVisible = !zonesVisible;
+  const button = $('toggle-zones');
+  button.textContent = zonesVisible ? 'Hide zones' : 'Show zones';
+  button.setAttribute('aria-pressed', String(zonesVisible));
+  drawZones();
+};
+
+loadSettings().catch(error => toast(error.message));
+pollFrame();
+setInterval(() => loadSettings().catch(() => {}), 15000);
+</script>
+</body>
+</html>
