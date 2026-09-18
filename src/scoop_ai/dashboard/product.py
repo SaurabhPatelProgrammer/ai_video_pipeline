@@ -24,6 +24,7 @@ from ..compute import clamp_analysis_fps, describe_compute
 from ..config import load_camera_config, load_service_config
 from ..inference.checkpoint_manifest import load_checkpoint_manifest
 from ..security import resolve_credential, safe_source_name, store_credential
+from ..recording import RelaySupervisor
 from ..storage import AuditLogRecord, SQLiteEventRepository, utc_now_iso
 from .discovery import (
     DiscoveredCamera,
@@ -46,6 +47,7 @@ class ProductPaths:
     calibration: Path
     settings: Path
     identity: Path
+    recordings: Path
 
     @classmethod
     def under(cls, root: str | Path) -> "ProductPaths":
@@ -59,6 +61,7 @@ class ProductPaths:
             calibration=base / "calibration" / "camera.json",
             settings=base / "service" / "product.json",
             identity=base / "service" / "identity.json",
+            recordings=base / "recordings",
         )
 
 
@@ -284,6 +287,7 @@ class ProductManager:
         self._discoveries: dict[str, DiscoveredCamera] = {}
         self._lock = threading.RLock()
         self._monitor: subprocess.Popen[bytes] | None = None
+        self._relay: RelaySupervisor | None = None
         self._live = LivePreview(self._configured_source)
         self._job = _kill_children_with_parent()
         self._ensure_identity()
@@ -308,7 +312,8 @@ class ProductManager:
 
     def _configured_source(self) -> int | str:
         """Resolve the saved camera through the OS credential store."""
-
+        if self._relay is not None and self._relay.running:
+            return f"rtsp://127.0.0.1:{self._relay.port}/{self._relay.camera_id}"
         return load_camera_config(self.paths.camera_config).resolve_source(
             credential_resolver=resolve_credential
         )
@@ -404,6 +409,10 @@ class ProductManager:
             "device_id": identity["device_id"],
             "site_id": identity["site_id"],
             "binding_state": identity.get("binding_state", "local_only"),
+            "recording": {
+                "relay_running": self._relay is not None and self._relay.running,
+                "directory": str(self.paths.recordings),
+            },
         }
 
     @property
@@ -411,6 +420,12 @@ class ProductManager:
         with self._lock:
             if self._monitor is not None and self._monitor.poll() is not None:
                 self._monitor = None
+                # The child service can exit while its MediaMTX relay is still
+                # alive.  Tear that relay down as well, otherwise the next
+                # Start monitoring click collides with the stale port.
+                if self._relay is not None:
+                    self._relay.stop()
+                    self._relay = None
             return self._monitor is not None
 
     def discover_cameras(self) -> list[dict[str, object]]:
@@ -542,6 +557,7 @@ class ProductManager:
         camera_id: str,
         pickup_zone: object,
         customer_zone: object,
+        analysis_mode: object = "live",
     ) -> dict[str, object]:
         shop_name = shop_name.strip()
         camera_name = camera_name.strip()
@@ -552,6 +568,8 @@ class ProductManager:
             raise ValueError("camera ID must use 3-64 lowercase letters, numbers or hyphens")
         if not isinstance(pickup_zone, list) or not isinstance(customer_zone, list):
             raise ValueError("both camera zones are required")
+        if analysis_mode not in {"live", "buffered"}:
+            raise ValueError("analysis mode must be live or buffered")
         pickup = validate_zone(pickup_zone, "pickup_zone")
         customer = validate_zone(customer_zone, "customer_zone")
         with self._lock:
@@ -627,6 +645,15 @@ open_timeout_ms = 5000
 read_timeout_ms = 5000
 read_wait_seconds = 2.0
 rtsp_transport = "tcp"
+
+[recording]
+enabled = true
+analysis_mode = "{analysis_mode}"
+relay_port = 8554
+segment_seconds = {30 if analysis_mode == "buffered" else 300}
+retention_days = 7
+clip_before_seconds = 15
+clip_after_seconds = 15
 '''
         # The wizard writes a rate this machine can sustain. "auto" keeps the
         # service on the GPU when one is present and falls back cleanly when the
@@ -692,6 +719,7 @@ customer_only_static_minimum_observations = 6
             "model_version": manifest.model_version,
             "checkpoint_manifest": str(self.checkpoint_manifest),
             "analysis_fps": analysis_fps,
+            "analysis_mode": analysis_mode,
             "configured_compute": compute.device,
             "pilot_mode": True,
             "auto_start_monitoring": True,
@@ -722,6 +750,20 @@ customer_only_static_minimum_observations = 6
                     "A monitoring service is already running for this camera. "
                     "It may have survived a previous crash; close it before starting another."
                 )
+            service = load_service_config(self.paths.service_config)
+            camera = load_camera_config(self.paths.camera_config)
+            source_override: str | None = None
+            if service.recording.enabled and camera.mode == "live":
+                source = camera.resolve_source(credential_resolver=resolve_credential)
+                if not isinstance(source, str):
+                    raise ValueError("recording requires an RTSP camera source")
+                self._relay = RelaySupervisor(
+                    product_root=self.paths.root, source=source, camera_id=camera.camera_id,
+                    recordings_root=self.paths.recordings, port=service.recording.relay_port,
+                    segment_seconds=service.recording.segment_seconds,
+                    retention_days=service.recording.retention_days,
+                )
+                source_override = self._relay.start()
             command = [sys.executable]
             if getattr(sys, "frozen", False):
                 command.append("--run-service")
@@ -732,10 +774,30 @@ customer_only_static_minimum_observations = 6
                 "--camera-config", str(self.paths.camera_config),
                 "--checkpoint-manifest", str(self.checkpoint_manifest),
             ])
+            if source_override is not None:
+                command.extend(["--source-override", source_override])
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            self._monitor = self.process_factory(command, cwd=str(self.paths.root), creationflags=flags)
+            try:
+                self._monitor = self.process_factory(command, cwd=str(self.paths.root), creationflags=flags)
+            except Exception:
+                if self._relay is not None:
+                    self._relay.stop()
+                    self._relay = None
+                raise
             _adopt_into_job(self._job, self._monitor.pid)
-            # Detect immediate child-service startup failures so the UI cannot report a dead service as active.`r`n            time.sleep(0.25)`r`n            if self._monitor.poll() is not None:`r`n                self._monitor = None`r`n                raise RuntimeError("Monitoring service stopped during startup. Check camera resolution, model compatibility, and service configuration.")`r`n        return self.status()
+            # Detect immediate child-service startup failures so the UI cannot
+            # report a dead service as active.
+            time.sleep(0.25)
+            if self._monitor.poll() is not None:
+                self._monitor = None
+                if self._relay is not None:
+                    self._relay.stop()
+                    self._relay = None
+                raise RuntimeError(
+                    "Monitoring service stopped during startup. Check camera resolution, "
+                    "model compatibility, and service configuration."
+                )
+        return self.status()
 
     def stop_monitoring(self) -> dict[str, object]:
         with self._lock:
@@ -748,6 +810,9 @@ customer_only_static_minimum_observations = 6
                     process.kill()
                     process.wait(timeout=5)
             self._monitor = None
+            if self._relay is not None:
+                self._relay.stop()
+                self._relay = None
         return self.status()
 
     def auto_start(self) -> None:
