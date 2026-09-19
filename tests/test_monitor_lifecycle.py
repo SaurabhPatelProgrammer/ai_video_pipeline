@@ -90,6 +90,13 @@ class MonitorLifecycleTests(unittest.TestCase):
         self.assertTrue(self.processes[0].terminated)
         self.assertFalse(self.manager.monitoring)
 
+    def test_monitoring_releases_the_live_preview_before_starting(self) -> None:
+        with mock.patch.object(self.manager._live, "stop") as stop:  # noqa: SLF001
+            self.manager.start_monitoring()
+
+        stop.assert_called_once()
+        self.assertTrue(self.manager.monitoring)
+
     def test_a_service_surviving_a_crash_blocks_a_second_one(self) -> None:
         """The real cause of duplicate services: an orphan we no longer own."""
 

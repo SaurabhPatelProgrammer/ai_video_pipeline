@@ -750,6 +750,11 @@ customer_only_static_minimum_observations = 6
                     "A monitoring service is already running for this camera. "
                     "It may have survived a previous crash; close it before starting another."
                 )
+            # A preview opened before monitoring resolves the camera's original
+            # RTSP URL. Release it before starting the relay so cameras that
+            # allow only one connection cannot reject the monitoring stream.
+            # A later preview resolves through the relay instead.
+            self._live.stop()
             service = load_service_config(self.paths.service_config)
             camera = load_camera_config(self.paths.camera_config)
             source_override: str | None = None

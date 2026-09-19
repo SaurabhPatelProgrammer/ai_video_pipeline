@@ -107,6 +107,8 @@ The setup script installs the selected PyTorch build, project dependencies, and
 the editable `scoop-ai` package. It probes for an NVIDIA driver and installs the
 CUDA 13.0 runtime when one is present, or the CPU runtime when it is not. Use
 `-Compute cu130`, `-Compute cu128`, or `-Compute cpu` to override the probe.
+For a development or validation machine, add `-IncludeDevTools` to install the
+test and lint dependencies as well.
 
 After `git lfs pull`, the deployable detector must exist at:
 
@@ -269,7 +271,8 @@ cups or cones. Every candidate must be compared with manual ground truth.
 ## Testing
 
 The test suite is written with the standard `unittest` runner and is also
-configured for pytest in CI:
+configured for pytest in CI. Run `.\setup.ps1 -IncludeDevTools` first when the
+virtual environment was created with the normal production setup:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v

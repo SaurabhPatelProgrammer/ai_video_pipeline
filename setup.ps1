@@ -1,7 +1,8 @@
 param(
     [ValidateSet("auto", "cu130", "cu128", "cpu")]
     [string]$Compute = "auto",
-    [switch]$SkipDashboardShortcut
+    [switch]$SkipDashboardShortcut,
+    [switch]$IncludeDevTools
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,7 +73,12 @@ if ($LASTEXITCODE -ne 0) { throw "PyTorch could not be installed for compute tar
 
 & $PythonExe -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) { throw "Project dependencies could not be installed." }
-& $PythonExe -m pip install --no-deps -e .
+if ($IncludeDevTools) {
+    & $PythonExe -m pip install -e ".[dev]"
+}
+else {
+    & $PythonExe -m pip install --no-deps -e .
+}
 if ($LASTEXITCODE -ne 0) { throw "The scoop-ai package could not be installed." }
 
 & $PythonExe scripts\check_environment.py
@@ -84,4 +90,7 @@ if (-not $SkipDashboardShortcut) {
 & $PythonExe -m scoop_ai.cli compute-check
 Write-Host ""
 Write-Host "Setup complete. Use the Scoop AI desktop shortcut after provisioning the camera."
+if ($IncludeDevTools) {
+    Write-Host "Developer tools are installed. Run '$PythonExe -m pytest -q' to validate the project."
+}
 Write-Host "Provision the camera with 'scoop-ai credential-set', then validate it with 'scoop-ai camera-check'."
